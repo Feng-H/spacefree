@@ -492,6 +492,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('modal-cancel').addEventListener('click', hideModal);
   $('modal-ok').addEventListener('click', () => { hideModal(); modalOkFn?.(); });
+  $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) hideModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) hideModal(); });
 
   connectSSE();
   loadAll();
