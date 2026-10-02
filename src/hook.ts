@@ -38,9 +38,9 @@ __spacefree_preexec() {
   [[ -n \$f ]] || return 0
   [[ -d \$HOME/.spacefree ]] || return 0
   local now=\${(%):-%D{%s}}
-  [[ \$_sf_last == "\$f:\$((now/60))" ]] && return 0
-  _sf_last="\$f:\$((now/60))"
-  printf '%s\\t%s\\n' "\$now" "\$f" >> \$HOME/.spacefree/events.jsonl 2>/dev/null
+  [[ \$_sf_last == "\$f:\$PWD:\$((now/60))" ]] && return 0
+  _sf_last="\$f:\$PWD:\$((now/60))"
+  printf '%s\\t%s\\t%s\\n' "\$now" "\$f" "\$PWD" >> \$HOME/.spacefree/events.jsonl 2>/dev/null
 }
 setopt EXTENDED_HISTORY HIST_SAVE_NO_DUPS   # 让新历史带时间戳（仅增量格式，安全）
 preexec_functions+=(__spacefree_preexec)
@@ -66,9 +66,9 @@ __spacefree_preexec() {
   local f="\${p#*Cellar/}"; f="\${f%%/*}"
   [ -d "\$HOME/.spacefree" ] || return 0
   local now=\$(( _sf_epoch0 + SECONDS ))
-  [ "\$_sf_last" = "\$f-\$((now/60))" ] && return 0
-  _sf_last="\$f-\$((now/60))"
-  printf '%s\\t%s\\n' "\$now" "\$f" >> "\$HOME/.spacefree/events.jsonl" 2>/dev/null
+  [ "\$_sf_last" = "\$f:\$PWD:\$((now/60))" ] && return 0
+  _sf_last="\$f:\$PWD:\$((now/60))"
+  printf '%s\\t%s\\t%s\\n' "\$now" "\$f" "\$PWD" >> "\$HOME/.spacefree/events.jsonl" 2>/dev/null
 }
 _sf_epoch0=\$(( \$(date +%s) - SECONDS ))
 trap '__spacefree_preexec "\$BASH_COMMAND"' DEBUG
@@ -86,11 +86,11 @@ function __spacefree_preexec --on-event fish_preexec
   test -n "\$f"; or return
   test -d \$HOME/.spacefree; or return
   set -l now (date +%s)
-  if test "\$_sf_last" = "\$f-"(math "\$now / 60")
+  if test "\$_sf_last" = "\$f:\$PWD:"(math "\$now / 60")
     return
   end
-  set -g _sf_last "\$f-"(math "\$now / 60")
-  printf '%s\\t%s\\n' \$now \$f >> \$HOME/.spacefree/events.jsonl 2>/dev/null
+  set -g _sf_last "\$f:\$PWD:"(math "\$now / 60")
+  printf '%s\\t%s\\t%s\\n' \$now \$f \$PWD >> \$HOME/.spacefree/events.jsonl 2>/dev/null
 end
 ${END}`;
 
@@ -197,9 +197,9 @@ __spacefree_preexec "nonexistent-command-xyz"
   try { logged = fs.readFileSync(eventFile, 'utf8').trim(); } catch { /* none */ }
   fs.rmSync(dir, { recursive: true, force: true });
   const lines = logged.split('\n');
-  const okGit = /^\d+\tgit$/m.test(logged);
-  const okSvc = /^\d+\tollama$/m.test(logged);
-  const noStop = !/\tpostgresql@16$/.test(logged);   // stop 不计为使用
+  const okGit = /^\d+\tgit\t/m.test(logged);
+  const okSvc = /^\d+\tollama(\t|$)/m.test(logged);
+  const noStop = !/\tpostgresql@16(\t|$)/m.test(logged);   // stop 不计为使用
   const ok = okGit && okSvc && noStop && r.code === 0;
   return { ok, detail: ok ? `自测通过: 直接命令→git ✓, 服务启动→ollama ✓, stop 不计数 ✓` : `自测失败 (exit ${r.code})，输出: ${r.stdout}|${r.stderr}|log=${logged}` };
 }

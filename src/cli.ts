@@ -11,9 +11,11 @@ import { runOps, type Op } from './cleaner.js';
 const HELP = `
 SpaceFree — macOS 动态磁盘清理工具（基于真实使用频率）
 
-用法: spacefree <命令> [参数]
+用法: spacefree [命令]
+无参数时直接进入交互式 TUI（推荐，所有操作都在终端完成）。
 
 命令:
+  tui                     交互式终端界面（默认）
   scan                    全量扫描（Homebrew / 应用 / 下载 / 缓存 / 使用记录）
   report [--days N]       基于最近一次扫描结果输出报告（--days 覆盖阈值）
   serve [--port N] [-o]   启动 Web 仪表盘（-o 自动打开浏览器，默认 http://localhost:8642）
@@ -41,9 +43,15 @@ function has(flag: string): boolean {
 }
 
 async function main(): Promise<void> {
-  const cmd = process.argv[2] ?? 'help';
+  const cmd = process.argv[2] ?? 'tui';
   const cfg = loadConfig();
   const log = (m: string) => process.stdout.write(`[spacefree] ${m}\n`);
+
+  if (cmd === 'tui' || cmd === 'ui') {
+    const { runTui } = await import('./tui.js');
+    await runTui();
+    return;
+  }
 
   if (cmd === 'scan') {
     await runScan(cfg, log, (m) => process.stdout.write(`… ${m}\n`));
@@ -146,6 +154,7 @@ function printReport(p: ReturnType<typeof plan>): void {
 阈值: ${p.thresholdDays} 天未使用视为可清理 | 宽限期: ${p.graceDays} 天
 可清理 brew 包: ${sum.candidatesFormulae} 个 (${fmtKB(sum.candidatesFormulaeK)})
 可清理应用: ${sum.candidatesApps} 个 (${fmtKB(sum.candidatesAppsK)})
+可清理项目依赖: ${sum.candidatesProjects} 个 (${fmtKB(sum.candidatesProjectsK)})
 被依赖保护: ${sum.needed} | 阻止(运行/服务/保护名单): ${sum.blocked} | 数据不足待复核: ${sum.review} | 保留: ${sum.kept}
 
 Top 候选:`);

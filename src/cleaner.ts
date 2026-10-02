@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exec } from './util.js';
+import { exec, fmtKB } from './util.js';
 import { checkUsedBy, runningFormulae, servicesRunning, getPrefix } from './brew.js';
 import { loadConfig } from './config.js';
 
@@ -11,6 +11,7 @@ export type Op =
   | { type: 'install-formula'; names: string[] }
   | { type: 'autoremove' }
   | { type: 'brew-cache' }
+  | { type: 'dev-cache'; names: string[] }
   | { type: 'trash-app'; paths: string[] }
   | { type: 'trash-file'; paths: string[] };
 
@@ -116,6 +117,44 @@ async function autoremove(dry: boolean, hooks: CleanerHooks): Promise<OpResult> 
   return { op: { type: 'autoremove' }, ok: r.code === 0, skipped: [], freedK: null, output };
 }
 
+/** 官方安全清理命令（仅在对应工具存在时执行） */
+const DEV_CLEAN_CMDS: Record<string, { cmd: string; args: string[] }> = {
+  'npm 缓存': { cmd: 'npm', args: ['cache', 'clean', '--force'] },
+  'pip 缓存': { cmd: 'pip3', args: ['cache', 'purge'] },
+  'uv 缓存': { cmd: 'uv', args: ['cache', 'clean'] },
+  'pnpm 存储': { cmd: 'pnpm', args: ['store', 'prune'] },
+  'bun 缓存': { cmd: 'bun', args: ['pm', 'cache', 'rm'] },
+  'yarn 缓存': { cmd: 'yarn', args: ['cache', 'clean'] },
+};
+
+async function cleanDevCaches(names: string[], dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
+  const output: string[] = [];
+  let ok = true;
+  for (const name of names) {
+    const def = DEV_CLEAN_CMDS[name];
+    if (!def) {
+      hooks.log(`跳过 ${name}：无官方清理命令（仅展示类别）`);
+      continue;
+    }
+    const which = await exec('/usr/bin/which', [def.cmd], { timeoutMs: 10_000 });
+    if (which.code !== 0) {
+      hooks.log(`跳过 ${name}：未安装 ${def.cmd}`);
+      continue;
+    }
+    if (dry) {
+      hooks.log(`预演: ${name} → ${def.cmd} ${def.args.join(' ')}`);
+      continue;
+    }
+    hooks.step(`清理 ${name}: ${def.cmd} ${def.args.join(' ')}`);
+    const r = await exec(def.cmd, def.args, {
+      timeoutMs: 600_000,
+      onLine: (line) => { hooks.log(line); output.push(line); },
+    });
+    if (r.code !== 0) ok = false;
+  }
+  return { op: { type: 'dev-cache', names }, ok, skipped: [], freedK: null, output };
+}
+
 async function brewCacheClean(dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
   const output: string[] = [];
   hooks.step(`${dry ? '预演' : '执行'} brew cleanup --prune=all…`);
@@ -162,6 +201,7 @@ async function trash(paths: string[], hooks: CleanerHooks): Promise<OpResult> {
 }
 
 export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Promise<OpResult[]> {
+  const freeBefore = dry ? null : await diskFreeK();
   const results: OpResult[] = [];
   for (const op of ops) {
     try {
@@ -170,6 +210,7 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Prom
       else if (op.type === 'install-formula') results.push(await installFormulae(op.names, dry, hooks));
       else if (op.type === 'autoremove') results.push(await autoremove(dry, hooks));
       else if (op.type === 'brew-cache') results.push(await brewCacheClean(dry, hooks));
+      else if (op.type === 'dev-cache') results.push(await cleanDevCaches(op.names, dry, hooks));
       else if (op.type === 'trash-app') results.push(await trash(op.paths, hooks));
       else if (op.type === 'trash-file') results.push(await trash(op.paths, hooks));
     } catch (err) {
@@ -177,5 +218,19 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Prom
       results.push({ op, ok: false, skipped: [], freedK: null, output: [] });
     }
   }
+  if (!dry && freeBefore != null) {
+    const freeAfter = await diskFreeK();
+    if (freeAfter != null && freeAfter !== freeBefore) {
+      const deltaK = freeAfter - freeBefore;
+      hooks.log(`磁盘可用空间: ${fmtKB(freeBefore)} → ${fmtKB(freeAfter)} (${deltaK > 0 ? '+' : ''}${fmtKB(Math.abs(deltaK))})`);
+    }
+  }
   return results;
+}
+
+async function diskFreeK(): Promise<number | null> {
+  const r = await exec('df', ['-k', '/'], { timeoutMs: 15_000 });
+  const line = r.stdout.split('\n')[1] ?? '';
+  const m = line.match(/\S+\s+\S+\s+\S+\s+(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
 }

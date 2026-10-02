@@ -19,8 +19,9 @@ Homebrew 装了 160+ 个包，不知道哪些有用、哪些能删？SpaceFree �
 | 🔍 **使用频率追踪** | 多源融合：Shell 历史（zsh/bash/fish，支持时间戳解析）+ **Shell 钩子**（精确记录每次调用，<1ms 开销）+ Spotlight（GUI 应用的最后打开时间与次数） |
 | 🛡️ **依赖级联保护** | 基于 `brew deps` 构建全量依赖图：被任何已装包依赖的 formula 标记为"被依赖"不可删；执行前还会用 `brew uses` 二次复核 |
 | 🚦 **安全判定引擎** | 运行中进程（ps）、brew services、保护名单、brew pin、新装宽限期 —— 层层拦截 |
-| 🧹 **四类清理** | brew formula / brew cask（含幽灵酒桶）/ 应用与下载安装包（移入**废纸篓可恢复**）/ brew 缓存 |
-| 🖥 **Web 仪表盘** | 可排序/筛选的清单表格、阈值即调即算、Dry-run 预演 → 确认执行、SSE 实时日志 |
+| 🧹 **五类清理** | brew formula / brew cask（含幽灵酒桶）/ 应用与下载安装包（移入**废纸篓可恢复**）/ brew 与开发工具缓存 / **项目依赖目录（node_modules）** |
+| 📦 **项目依赖动态清理** | 扫描项目根目录下的 node_modules/.venv：双信号判定（源码最新修改时间 + 监控钩子记录的命令执行 cwd）；长期不动的项目 → 仅删依赖目录，源码保留，需要时 `npm install` 一键重建 |
+| 🖥 **全键盘 TUI** | 默认交互界面：七个页签浏览/勾选/搜索/排序，Dry-run 预演 → 输入 `yes` 确认执行 → 实时日志 + 磁盘真实释放量报告（另保留 Web 模式 `serve`） |
 | ⌨️ **纯终端模式** | `scan` / `report` / `clean` 全套 CLI，不开浏览器也能用 |
 | 🔬 **进阶监控（可选）** | 生成 eslogger LaunchDaemon 配置，root 级记录全系统进程启动（覆盖 GUI/IDE 调用） |
 
@@ -31,19 +32,24 @@ Homebrew 装了 160+ 个包，不知道哪些有用、哪些能删？SpaceFree �
 npm install
 npm run build
 
-# 1. 首次扫描（约 1-2 分钟）
-node dist/cli.js scan
-
-# 2. 安装使用监控钩子（推荐！此后"最后使用时间"自动更新）
+# 1. 安装使用监控钩子（推荐！记录命令调用 + 运行目录）
 node dist/cli.js hook install
 
-# 3. 打开 Web 仪表盘
-node dist/cli.js serve -o          # http://localhost:8642
+# 2. 进入 TUI（默认界面，全键盘操作）
+node dist/cli.js                   # 或 node dist/cli.js tui
+#    首次进入自动扫描；数字 1-7 切页，space 勾选，d 预演，x 执行（输入 yes 确认）
 
 # 纯终端工作流
 node dist/cli.js report --days 90  # 查看报告
 node dist/cli.js clean --days 90 --autoremove --cache --yes
+
+# Web 模式（可选）
+node dist/cli.js serve -o          # http://localhost:8642
 ```
+
+## 与 Mole 等静态清理工具的关系
+
+[Mole](https://github.com/tw93/Mole) 解决的是"垃圾清空"（缓存/日志/残留），SpaceFree 解决的是"**按用不用决定去留**"（动态删除）：同一个包/应用/项目，用得少就删、需要时一键装回。两者互补，可共存。SpaceFree 的缓存页也覆盖了 brew/npm/pip/uv 等官方安全清理命令，并对 Gradle/Playwright/Ollama 模型等大目录采取"仅展示不自动删"的保守策略（与你 Mole 白名单的习惯一致）。
 
 ## 使用监控：三层方案
 

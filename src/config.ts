@@ -14,6 +14,8 @@ export interface Config {
   appDirs: string[];
   /** 安装包扫描目录 */
   downloadDirs: string[];
+  /** 项目根目录（扫描其中的 node_modules/.venv 依赖目录） */
+  projectRoots: string[];
   /** 扫描 .zip 安装包（可能有误报） */
   includeZip: boolean;
 }
@@ -25,6 +27,7 @@ export const DEFAULT_CONFIG: Config = {
   port: 8642,
   appDirs: ['/Applications', '~/Applications'],
   downloadDirs: ['~/Downloads'],
+  projectRoots: ['~/pidev', '~/dev', '~/projects', '~/code', '~/work', '~/Documents'],
   includeZip: false,
 };
 

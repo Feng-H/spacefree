@@ -1,4 +1,5 @@
 import type { ScanState } from './scanner.js';
+import type { ProjectEntry } from './projects.js';
 import type { Config } from './config.js';
 
 export type Verdict = 'keep' | 'unused' | 'stale' | 'needed' | 'blocked' | 'review';
@@ -48,6 +49,20 @@ export interface AppPlan {
   reason: string;
 }
 
+export interface ProjectPlan {
+  name: string;
+  path: string;
+  depSizeK: number;
+  depPaths: string[];
+  depNames: string[];
+  srcMtime: number | null;
+  lastRun: number | null;
+  lastUsed: number | null;
+  lastUsedDaysAgo: number | null;
+  verdict: Verdict;
+  reason: string;
+}
+
 export interface PlanResult {
   generatedAt: number;
   thresholdDays: number;
@@ -55,11 +70,14 @@ export interface PlanResult {
   formulae: FormulaPlan[];
   casks: CaskPlan[];
   apps: AppPlan[];
+  projects: ProjectPlan[];
   summary: {
     candidatesFormulae: number;
     candidatesFormulaeK: number;
     candidatesApps: number;
     candidatesAppsK: number;
+    candidatesProjects: number;
+    candidatesProjectsK: number;
     blocked: number;
     needed: number;
     kept: number;
@@ -81,6 +99,8 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     candidatesFormulaeK: 0,
     candidatesApps: 0,
     candidatesAppsK: 0,
+    candidatesProjects: 0,
+    candidatesProjectsK: 0,
     blocked: 0,
     needed: 0,
     kept: 0,
@@ -231,6 +251,39 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     };
   });
 
+  // 项目依赖目录（node_modules 等）：源码保留，仅依赖可重建
+  const projects: ProjectPlan[] = (state.projects ?? []).map((p) => {
+    const lastUsedDaysAgo = p.lastUsed != null ? (now - p.lastUsed) / 86400 : null;
+    let verdict: Verdict = 'review';
+    let reason = '';
+    if (p.lastUsed == null) {
+      verdict = 'review'; reason = '无使用数据（源码时间与命令记录均缺失）';
+    } else if (lastUsedDaysAgo! > thresholdDays) {
+      verdict = 'stale';
+      reason = `${Math.round(lastUsedDaysAgo!)} 天未动过（源码 ${fmtAge(p.srcMtime)}${p.lastRun ? `，最近命令 ${fmtAge(p.lastRun)}` : '，无命令记录'}）；删除仅依赖，源码保留，需要时 npm install 重建`;
+    } else {
+      verdict = 'keep';
+      reason = `最近 ${Math.round(lastUsedDaysAgo!)} 天内有活动（${p.lastRun && (!p.srcMtime || p.lastRun > p.srcMtime) ? '命令执行' : '源码修改'}）`;
+    }
+    if (verdict === 'stale') {
+      summary.candidatesProjects += 1;
+      summary.candidatesProjectsK += p.depSizeK;
+    }
+    return {
+      name: p.name,
+      path: p.path,
+      depSizeK: p.depSizeK,
+      depPaths: p.depDirs.map((d) => d.path),
+      depNames: p.depDirs.map((d) => d.name),
+      srcMtime: p.srcMtime,
+      lastRun: p.lastRun,
+      lastUsed: p.lastUsed,
+      lastUsedDaysAgo,
+      verdict,
+      reason,
+    };
+  });
+
   return {
     generatedAt: Math.floor(now),
     thresholdDays,
@@ -238,6 +291,14 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     formulae,
     casks,
     apps,
+    projects,
     summary,
   };
+}
+
+function fmtAge(ts: number | null): string {
+  if (ts == null) return '未知';
+  const d = (Date.now() / 1000 - ts) / 86400;
+  if (d < 1) return '今天有更新';
+  return `${Math.round(d)} 天前有更新`;
 }

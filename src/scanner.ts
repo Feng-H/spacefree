@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { exec, expandHome, pmap, STATE_PATH, fmtKB } from './util.js';
 import { loadBrewData, runningFormulae, servicesRunning, parseSizeToKB, type BrewData, type FormulaInfo, type CaskInfo } from './brew.js';
 import { collectUsage, spotlightUsage, type UsageData } from './usage.js';
+import { scanProjects, type ProjectEntry } from './projects.js';
 import type { Config } from './config.js';
 
 export interface AppEntry {
@@ -24,9 +25,20 @@ export interface DownloadEntry {
   kind: 'dmg' | 'pkg' | 'zip';
 }
 
+export interface DevCacheEntry {
+  name: string;         // npm / pip / uv / ...
+  sizeK: number;
+  cleanCmd?: string;    // 官方安全清理命令（可一键执行）
+  safe: boolean;        // true=官方命令可清；false=仅展示（用户自行决定）
+  note?: string;
+}
+
 export interface CacheInfo {
   brewCacheK: number;
   brewCleanupFreedK: number | null;  // what `brew cleanup --prune=all` would free
+  devCaches: DevCacheEntry[];
+  libraryCachesK: number;   // ~/Library/Caches 总量（仅展示）
+  derivedDataK: number;     // Xcode DerivedData（仅展示）
 }
 
 export interface ScanState {
@@ -36,6 +48,7 @@ export interface ScanState {
   casks: CaskInfo[];
   apps: AppEntry[];
   downloads: DownloadEntry[];
+  projects: ProjectEntry[];
   cache: CacheInfo;
   running: string[];
   services: string[];
@@ -129,6 +142,39 @@ async function scanDownloads(cfg: Config, log: (m: string) => void): Promise<Dow
   return out;
 }
 
+function duOne(p: string): number {
+  if (!fs.existsSync(p)) return 0;
+  return execSyncKB(['-sk', p]);
+}
+
+/** 开发工具缓存与展示型缓存（借鉴 Mole 的清理面；官方命令可安全清，其余仅展示） */
+function scanDevCaches(log: (m: string) => void): { devCaches: DevCacheEntry[]; libraryCachesK: number; derivedDataK: number } {
+  const home = process.env.HOME ?? '';
+  const defs: { name: string; path: string; cleanCmd?: string; safe: boolean; note?: string }[] = [
+    { name: 'npm 缓存', path: path.join(home, '.npm'), cleanCmd: 'npm cache clean --force', safe: true },
+    { name: 'pip 缓存', path: path.join(home, 'Library/Caches/pip'), cleanCmd: 'pip3 cache purge', safe: true },
+    { name: 'uv 缓存', path: path.join(home, 'Library/Caches/uv'), cleanCmd: 'uv cache clean', safe: true },
+    { name: 'pnpm 存储', path: path.join(home, 'Library/pnpm/store'), cleanCmd: 'pnpm store prune', safe: true },
+    { name: 'bun 缓存', path: path.join(home, '.bun/install/cache'), cleanCmd: 'bun pm cache rm', safe: true },
+    { name: 'yarn 缓存', path: path.join(home, 'Library/Caches/Yarn'), cleanCmd: 'yarn cache clean', safe: true },
+    // 以下仅展示大小，由用户自行决定（Mole 白名单精神：可能被工具频繁复用）
+    { name: 'Gradle 缓存', path: path.join(home, '.gradle/caches'), safe: false, note: '仅展示（构建复用，删除后首次构建变慢）' },
+    { name: 'Cargo 注册表', path: path.join(home, '.cargo/registry'), safe: false, note: '仅展示' },
+    { name: 'Playwright 浏览器', path: path.join(home, 'Library/Caches/ms-playwright'), safe: false, note: '仅展示（删除后需重新下载浏览器）' },
+    { name: 'Ollama 模型', path: path.join(home, '.ollama/models'), safe: false, note: '仅展示（大模型权重，勿轻易删）' },
+  ];
+  const devCaches: DevCacheEntry[] = [];
+  for (const d of defs) {
+    const sizeK = duOne(d.path);
+    if (sizeK > 0) devCaches.push({ name: d.name, sizeK, cleanCmd: d.cleanCmd, safe: d.safe, note: d.note });
+  }
+  const libraryCachesK = duOne(path.join(home, 'Library/Caches'));
+  const derivedDataK = duOne(path.join(home, 'Library/Developer/Xcode/DerivedData'));
+  const totalK = devCaches.reduce((a, b) => a + b.sizeK, 0);
+  log(`开发/工具缓存: ${devCaches.length} 类共 ${fmtKB(totalK)}；~/Library/Caches ${fmtKB(libraryCachesK)}；DerivedData ${fmtKB(derivedDataK)}`);
+  return { devCaches, libraryCachesK, derivedDataK };
+}
+
 async function scanCache(log: (m: string) => void): Promise<CacheInfo> {
   const homeCache = path.join(process.env.HOME ?? '', 'Library/Caches/Homebrew');
   const brewCacheK = fs.existsSync(homeCache) ? execSyncKB(['-sk', homeCache]) : 0;
@@ -137,7 +183,8 @@ async function scanCache(log: (m: string) => void): Promise<CacheInfo> {
   const m = dry.stdout.match(/free approximately ([\d.]+\s*[KMG]B)/i);
   if (m) freedK = parseSizeToKB(m[1]);
   log(`brew 缓存: ${fmtKB(brewCacheK)}；brew cleanup 可释放 ${freedK ? fmtKB(freedK) : '未知'}`);
-  return { brewCacheK, brewCleanupFreedK: freedK };
+  const extra = scanDevCaches(log);
+  return { brewCacheK, brewCleanupFreedK: freedK, ...extra };
 }
 
 function linkCasksToApps(casks: CaskInfo[], apps: AppEntry[]): void {
@@ -165,6 +212,7 @@ export async function runScan(cfg: Config, log: (m: string) => void, onProgress?
   ]);
   const apps = await scanApps(cfg, log, onProgress);
   const downloads = await scanDownloads(cfg, log);
+  const projects = await scanProjects(cfg, log, onProgress);
   onProgress?.('计算缓存占用…');
   const cache = await scanCache(log);
   linkCasksToApps(brew.casks, apps);
@@ -176,6 +224,7 @@ export async function runScan(cfg: Config, log: (m: string) => void, onProgress?
     casks: brew.casks,
     apps,
     downloads,
+    projects,
     cache,
     running: [...running],
     services: [...services],
