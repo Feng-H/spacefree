@@ -7,7 +7,7 @@ import { plan, type PlanResult, type FormulaPlan, type CaskPlan, type AppPlan } 
 import { runOps, type Op } from './cleaner.js';
 import { installHook, hookStatus, selfTestHook } from './hook.js';
 import { appendHistory, readHistory, reinstallableFromHistory, type HistoryRecord } from './history.js';
-import { exec, DATA_DIR, fmtKB, fmtDate } from './util.js';
+import { exec, DATA_DIR, fmtKB, fmtDate, killAllChildren } from './util.js';
 
 /* ---------- ANSI / 宽度工具 ---------- */
 const C = {
@@ -140,7 +140,7 @@ export class Tui {
     input.resume();
     out.write('\x1b[?1049h\x1b[?25l\x1b[2J');
     process.on('SIGWINCH', () => this.scheduleRender());
-    process.on('SIGINT', () => { /* ctrl+c 在 keypress 中处理 */ });
+    process.on('SIGINT', () => this.quitNow());
     input.on('keypress', (_s: string, key: any) => {
       try { this.onKey(key); } catch (err) { this.setStatus(`内部错误: ${err instanceof Error ? err.message : err}`); }
     });
@@ -162,13 +162,18 @@ export class Tui {
   private cleanup(): void {
     try {
       process.stdin.setRawMode(false);
+    } catch { /* ignore */ }
+    try {
       process.stdout.write('\x1b[?25h\x1b[?1049l');
     } catch { /* ignore */ }
   }
 
-  private quit(): void {
+  /** 彻底退出：恢复终端 → 杀活动子进程 → 立即退出进程 */
+  private quitNow(code = 0): void {
     this.running = false;
     this.cleanup();
+    killAllChildren();
+    process.exit(code);
   }
 
   /* ---------- 数据 ---------- */
@@ -468,8 +473,7 @@ export class Tui {
   private onKey(key: any): void {
     if (!key) return;
     if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
-      if (this.busy) { this.log(C.red + '（任务运行中，再次 Ctrl+C 强制退出）' + C.reset); this.busy = false; return; }
-      this.quit(); return;
+      this.quitNow(); return;
     }
     if (this.busy && this.mode === 'log') {
       if (key.name === 'up' || key.name === 'k') { this.logFollow = false; this.scrollLog(-1); }
@@ -613,7 +617,7 @@ export class Tui {
       this.render(); return;
     }
 
-    if (name === 'q') { this.quit(); return; }
+    if (name === 'q') { this.quitNow(); return; }
     if (name === 'left' || name === 'right') {
       const i = this.tabs.findIndex((t) => t.id === this.tab);
       this.tab = this.tabs[(i + (name === 'right' ? 1 : this.tabs.length - 1)) % this.tabs.length].id;
@@ -876,7 +880,7 @@ export class Tui {
     let help: string;
     if (this.mode === 'log') {
       help = this.busy
-        ? ' ↑↓/jk 滚动日志 · Ctrl+C 中断'
+        ? ' ↑↓/jk 滚动日志 · Ctrl+C 立即退出'
         : this.lastExecSummary
           ? C.bold + C.green + ' q/esc 返回列表 · r 重新扫描刷新数据（推荐）' + C.reset + C.gray + ' · ↑↓/jk/G 滚动'
           : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');

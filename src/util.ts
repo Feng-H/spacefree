@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -26,10 +26,21 @@ export interface ExecResult {
   combined: string;
 }
 
+const liveChildren = new Set<ChildProcess>();
+
+/** 杀掉所有由 exec 启动且仍在运行的活动子进程（TUI 强制退出用） */
+export function killAllChildren(): void {
+  for (const c of liveChildren) {
+    try { c.kill('SIGKILL'); } catch { /* already dead */ }
+  }
+  liveChildren.clear();
+}
+
 /** Run a command, optionally streaming each output line to onLine. Never throws. */
 export function exec(cmd: string, args: string[], opts: ExecOpts = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: process.env });
+    liveChildren.add(child);
     let stdout = '';
     let stderr = '';
     let combined = '';
@@ -55,6 +66,7 @@ export function exec(cmd: string, args: string[], opts: ExecOpts = {}): Promise<
         }, opts.timeoutMs)
       : null;
     child.on('close', (code) => {
+      liveChildren.delete(child);
       if (timer) clearTimeout(timer);
       resolve({ code: code ?? -1, stdout, stderr, combined });
     });
