@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { loadConfig, saveConfig } from './config.js';
 import { runScan, loadState } from './scanner.js';
 import { plan } from './plan.js';
@@ -44,6 +45,10 @@ function has(flag: string): boolean {
 
 async function main(): Promise<void> {
   const cmd = process.argv[2] ?? 'tui';
+  if (cmd === '--version' || cmd === 'version' || cmd === '-v') {
+    console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+    return;
+  }
   const cfg = loadConfig();
   const log = (m: string) => process.stdout.write(`[spacefree] ${m}\n`);
 

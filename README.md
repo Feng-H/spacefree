@@ -2,7 +2,27 @@
 
 > 按程序和包的**真实使用频率**智能清理磁盘 —— 终端核心 + Web 仪表盘，零运行时依赖。
 
+[![GitHub release](https://img.shields.io/github/v/release/Feng-H/spacefree?color=blue)](https://github.com/Feng-H/spacefree/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## 安装
+
+### Homebrew（推荐）
+
+```bash
+brew install Feng-H/tap/spacefree
+spacefree          # 直接进入 TUI
+```
+
+### 从源码
+
+```bash
+git clone https://github.com/Feng-H/spacefree.git
+cd spacefree && npm install && npm run build
+node dist/cli.js   # 或 npm link 后直接 spacefree
+```
+
+> 要求：macOS 12+ / Node.js ≥ 20（brew 安装会自动带上 node 依赖）
 
 ## 为什么需要它
 
