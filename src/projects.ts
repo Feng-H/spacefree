@@ -13,7 +13,7 @@ export interface DepDir {
 export interface ProjectEntry {
   name: string;
   path: string;
-  via: 'roots' | 'agent';   // 来源: 配置根目录 | AGENTS.md/CLAUDE.md 标记发现
+  via: 'roots' | 'agent' | 'scan';   // 来源: 配置根目录 | agent 标志文件 | 全盘依赖目录扫描
   depDirs: DepDir[];
   depSizeK: number;
   srcMtime: number | null;    // 最新源码修改时间（排除依赖目录与 .git）
@@ -135,6 +135,51 @@ function readCwdUsage(): Map<string, number> {
   return map;
 }
 
+/** 排除的工具缓存/系统目录（这些位置的依赖属缓存页范畴，不作为项目） */
+const SCAN_EXCLUDE_PARTS = ['/Library/', '/.Trash/', '/.cache/', '/.local/', '/.npm/', '/.bun/', '/.cargo/', '/.rustup/', '/.gradle/', '/.pnpm-store/', '/Library/pnpm/'];
+
+/**
+ * 全盘依赖目录发现（通用方案，不依赖任何目录命名约定）：
+ * - node_modules（非隐藏名，Spotlight 索引可靠）→ mdfind 秒查，过滤嵌套（路径中仅出现一次）
+ * - .venv / venv / .virtualenv（隐藏名 Spotlight 索引不全）→ find + prune 受控全扫（~1-2s）
+ * 返回：项目根目录集合（依赖目录的父目录）
+ */
+async function findGlobalDepProjects(home: string, log: (m: string) => void): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>(); // 项目根 -> 发现的依赖名
+  const addRoot = (dir: string, dep: string) => {
+    const list = out.get(dir) ?? [];
+    if (!list.includes(dep)) list.push(dep);
+    out.set(dir, list);
+  };
+
+  // 1) node_modules via Spotlight
+  let mdCount = 0;
+  const r = await exec('mdfind', ['-name', 'node_modules'], { timeoutMs: 30_000 });
+  if (r.code === 0) {
+    for (const line of r.stdout.split('\n').filter(Boolean)) {
+      if (!line.startsWith(home + '/') || line !== line.trim()) continue;
+      if (SCAN_EXCLUDE_PARTS.some((p) => line.includes(p))) continue;
+      if (path.basename(line) !== 'node_modules') continue;
+      // 只保留最外层（路径中 node_modules 仅出现一次，排除嵌套依赖）
+      if (line.split('/').filter((s) => s === 'node_modules').length !== 1) continue;
+      mdCount += 1;
+      addRoot(path.dirname(line), 'node_modules');
+    }
+  }
+
+  // 2) python 类 venv 目录 via find（Spotlight 对隐藏目录索引不全）
+  let findCount = 0;
+  const script = `/usr/bin/find ${JSON.stringify(home)} -maxdepth 5 \\( -name node_modules -o -name .git -o -name Library -o -name .Trash -o -name .cache \\) -prune -o \\( -name .venv -o -name venv -o -name .virtualenv \\) -type d -print 2>/dev/null`;
+  const rf = await exec('/bin/bash', ['-c', script], { timeoutMs: 120_000 });
+  for (const line of rf.stdout.split('\n').filter(Boolean)) {
+    if (SCAN_EXCLUDE_PARTS.some((p) => line.includes(p))) continue;
+    findCount += 1;
+    addRoot(path.dirname(line), path.basename(line));
+  }
+  log(`全盘依赖发现: node_modules×${mdCount}（Spotlight）+ venv 类×${findCount}（find）→ ${out.size} 个项目根`);
+  return out;
+}
+
 function lastRunFor(projPath: string, cwdUsage: Map<string, number>): number | null {
   let best: number | null = null;
   for (const [cwd, ts] of cwdUsage) {
@@ -150,7 +195,7 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
   const roots = cfg.projectRoots.map(expandHome).filter((r) => fs.existsSync(r) && fs.statSync(r).isDirectory());
   const seen = new Set<string>();
   const projects: string[] = [];
-  const viaMap = new Map<string, 'roots' | 'agent'>();
+  const viaMap = new Map<string, 'roots' | 'agent' | 'scan'>();
   for (const root of roots) {
     for (const p of findProjects(root)) {
       if (!seen.has(p)) { seen.add(p); projects.push(p); viaMap.set(p, 'roots'); }
@@ -160,6 +205,11 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
   onProgress?.('扫描 AI agent 工作区（AGENTS.md/CLAUDE.md）…');
   for (const p of await findAgentProjects(log)) {
     if (!seen.has(p)) { seen.add(p); projects.push(p); viaMap.set(p, 'agent'); }
+  }
+  onProgress?.('全盘发现依赖目录（node_modules/.venv，不依赖目录命名）…');
+  const home = process.env.HOME ?? '';
+  for (const [root] of await findGlobalDepProjects(home, log)) {
+    if (!seen.has(root)) { seen.add(root); projects.push(root); viaMap.set(root, 'scan'); }
   }
   const cwdUsage = readCwdUsage();
 
@@ -179,7 +229,7 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
     return {
       name: path.basename(proj),
       path: proj,
-      via: viaMap.get(proj) ?? 'roots',
+      via: viaMap.get(proj) ?? 'scan',
       depDirs,
       depSizeK: depDirs.reduce((a, b) => a + b.sizeK, 0),
       srcMtime: mtime,
@@ -188,6 +238,12 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
     };
   });
   const result = entries.filter((e): e is ProjectEntry => e != null).sort((a, b) => b.depSizeK - a.depSizeK);
+  // 同名项目（不同路径）加父目录前缀区分
+  const nameCount = new Map<string, number>();
+  for (const e of result) nameCount.set(e.name, (nameCount.get(e.name) ?? 0) + 1);
+  for (const e of result) {
+    if ((nameCount.get(e.name) ?? 0) > 1) e.name = `${path.basename(path.dirname(e.path))}/${e.name}`;
+  }
   const totalK = result.reduce((a, b) => a + b.depSizeK, 0);
   log(`项目依赖: ${result.length} 个项目共 ${Math.round(totalK / 1024)} MB`);
   return result;

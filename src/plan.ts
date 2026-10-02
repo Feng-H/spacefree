@@ -52,7 +52,7 @@ export interface AppPlan {
 export interface ProjectPlan {
   name: string;
   path: string;
-  via: 'roots' | 'agent';
+  via: 'roots' | 'agent' | 'scan';
   depSizeK: number;
   depPaths: string[];
   depNames: string[];
