@@ -537,6 +537,7 @@ export class Tui {
   private handleLogKey(key: any): void {
     if (key.name === 'q' || key.name === 'escape') { this.mode = 'table'; this.render(); return; }
     if (key.name === 'r') { void this.doScan(); return; }
+    if (key.name === 'x') { this.startExecute(); return; }
     if (key.name === 'up' || key.name === 'k') { this.logFollow = false; this.scrollLog(-1); }
     else if (key.name === 'down' || key.name === 'j') this.scrollLog(1);
     else if (key.name === 'g') { this.logFollow = false; this.render(); }
@@ -815,7 +816,9 @@ export class Tui {
     // 帮助行
     let help: string;
     if (this.mode === 'log') {
-      help = this.busy ? ' ↑↓/jk 滚动日志 · Ctrl+C 中断' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动';
+      help = this.busy
+        ? ' ↑↓/jk 滚动日志 · Ctrl+C 中断'
+        : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');
     } else if (this.mode === 'input') {
       help = ' enter 确认 · esc 取消';
     } else if (this.tab === 'history') {
