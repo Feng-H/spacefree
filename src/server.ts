@@ -50,7 +50,11 @@ export function startServer(port?: number): http.Server {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
       });
+      res.flushHeaders();
+      // 立即发一条注释帧，避免浏览器等待首帧
+      res.write(': connected\n\n');
       const send = (msg: { event: string; data: unknown; ts: number }) => {
         res.write(`id: ${msg.ts}\nevent: ${msg.event}\ndata: ${JSON.stringify(msg.data)}\n\n`);
       };
@@ -86,7 +90,12 @@ export function startServer(port?: number): http.Server {
         '.png': 'image/png',
         '.ico': 'image/x-icon',
       };
-      res.writeHead(200, { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream' });
+      // 开发工具页面：禁用缓存，避免旧 JS 与新 HTML 混搭导致渲染中断
+      res.writeHead(200, {
+        'Content-Type': types[path.extname(file)] ?? 'application/octet-stream',
+        'Cache-Control': 'no-store, must-revalidate',
+        'Pragma': 'no-cache',
+      });
       res.end(content);
       return;
     }
@@ -222,6 +231,16 @@ export function startServer(port?: number): http.Server {
   });
 
   const cfg = loadConfig();
-  server.listen(port ?? cfg.port);
+  const listenPort = port ?? cfg.port;
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n  ❌ 端口 ${listenPort} 已被占用（可能已有一个 spacefree serve 在运行）。
+  解决：换端口 --port ${listenPort + 1}，或先停掉旧进程：\n     lsof -ti :${listenPort} | xargs kill\n`);
+    } else {
+      console.error(`服务器错误: ${err.message}`);
+    }
+    process.exit(1);
+  });
+  server.listen(listenPort);
   return server;
 }

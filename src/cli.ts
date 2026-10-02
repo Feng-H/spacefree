@@ -64,12 +64,14 @@ async function main(): Promise<void> {
   if (cmd === 'serve') {
     const port = arg('--port') ? parseInt(arg('--port')!, 10) : undefined;
     const server = startServer(port);
-    const addr = server.address();
-    const actualPort = typeof addr === 'object' && addr ? addr.port : port ?? cfg.port;
-    console.log(`\n  🧹 SpaceFree Web 仪表盘已启动: http://localhost:${actualPort}\n  Ctrl+C 停止\n`);
-    if (has('-o') || has('--open')) {
-      spawn('open', [`http://localhost:${actualPort}`], { stdio: 'ignore', detached: true }).unref();
-    }
+    server.on('listening', () => {
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr ? addr.port : port ?? cfg.port;
+      console.log(`\n  🧹 SpaceFree Web 仪表盘已启动: http://localhost:${actualPort}\n  Ctrl+C 停止\n`);
+      if (has('-o') || has('--open')) {
+        spawn('open', [`http://localhost:${actualPort}`], { stdio: 'ignore', detached: true }).unref();
+      }
+    });
     return;
   }
 

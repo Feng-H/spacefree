@@ -1,6 +1,20 @@
 /* SpaceFree Web 仪表盘 */
 'use strict';
 
+// 全局错误兑底：任何渲染异常都直接打到页面上，避免“无声卡死”
+window.addEventListener('error', (e) => {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#dc2626;color:#fff;padding:10px 16px;font:12px monospace;z-index:9999';
+  el.textContent = `JS 错误: ${e.message} (${e.filename}:${e.lineno}) — 请强制刷新 (Cmd+Shift+R)`;
+  document.body.appendChild(el);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#dc2626;color:#fff;padding:10px 16px;font:12px monospace;z-index:9999';
+  el.textContent = `Promise 异常: ${e.reason} — 请强制刷新 (Cmd+Shift+R)`;
+  document.body.appendChild(el);
+});
+
 const $ = (id) => document.getElementById(id);
 const state = {
   data: null,          // { state, plan, config, hook, job }
