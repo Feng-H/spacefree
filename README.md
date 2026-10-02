@@ -75,10 +75,12 @@ cask 的"幽灵酒桶"（.app 已被手动删除）自动标记可清理；Quick
 
 ## 执行时的四重安全
 
-1. **预演优先**：Web 端必须先 Dry-run 才会出现"确认执行"按钮
+1. **预演优先**：Web 端必须先 Dry-run；预演完成后会弹窗展示安全复核结果，需点红色"确认执行清理"才真正执行
 2. **执行时复核**：即使页面数据过期，卸载前重新跑 `brew uses --installed` + 运行进程 + 服务 + 保护名单检查
 3. **可恢复删除**：应用和安装包走 Finder 废纸篓（AppleScript），随时可还原
-4. **孤儿依赖自动善后**：卸载后可一键 `brew autoremove` 清理无主依赖（如本机的 openjdk@25）
+4. **孤儿依赖自动善后**：Homebrew 7 在 `brew uninstall` 后会自动 autoremove 无主依赖（如本机验证时顺带清掉了 openjdk@25）
+
+> 已实测验证（E2E）：`brew install hello` → 判定为"从未使用"候选 → Dry-run 仅输出计划不删 → 确认后真实卸载（Cellar/brew list/PATH 三处确认）；假应用删除后可在 Finder 废纸篓中恢复。
 
 ## 数据存储
 

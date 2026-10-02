@@ -327,6 +327,7 @@ async function executeReal() {
     switchTab('log');
     state.dryPreviewed = false;
     state.selFormulae.clear(); state.selCasks.clear(); state.selApps.clear(); state.selDownloads.clear();
+    render();
     renderActionBar();
   } else {
     const j = await r.json().catch(() => ({}));
@@ -364,8 +365,24 @@ function connectSSE() {
   });
   es.addEventListener('clean-done', (e) => {
     const d = JSON.parse(e.data);
-    appendLog(d.dry ? '── 预演完成 ──' : `── 清理完成 (${d.ok ? '成功' : '部分失败'})，建议重新扫描 ──`, d.ok ? 'ok' : 'err');
-    if (!d.dry) setTimeout(() => scan(), 1500);
+    if (d.dry) {
+      appendLog('── 预演完成，等待确认 ──', 'ok');
+      const skippedTxt = d.skipped?.length
+        ? `<p>⚠️ 有 ${d.skipped.length} 项被安全拦截（运行中/被依赖/保护名单）：<b>${esc(d.skipped.join('、'))}</b></p>`
+        : '<p>✅ 全部选择项均通过安全复核（反向依赖 / 运行中进程 / 服务 / 保护名单）。</p>';
+      showModal('Dry-run 预演完成',
+        `${skippedTxt}<p class="muted">完整过程已写入日志页可核对。<b>只有点击下方红色按钮才会真正执行清理</b>，应用/文件删除会进废纸篓可恢复。</p>`,
+        executeReal, '确认执行清理', 'danger');
+    } else {
+      appendLog(`── 清理完成 (${d.ok ? '成功' : '部分失败'})，自动重新扫描 ──`, d.ok ? 'ok' : 'err');
+      const skippedTxt = d.skipped?.length
+        ? `<p>⚠️ 被安全拦截跳过：${esc(d.skipped.join('、'))}</p>`
+        : '';
+      showModal(d.ok ? '✅ 清理完成' : '⚠️ 清理完成（部分失败）',
+        `${skippedTxt}<p class="muted">已触发自动重新扫描，扫描完成后数据将自动刷新（brew 包数、可释放量等都会更新）。</p>`,
+        null, '知道了', '');
+      setTimeout(() => scan(), 1500);
+    }
   });
 }
 
@@ -500,10 +517,13 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let modalOkFn = null;
-function showModal(title, bodyHtml, onOk) {
+function showModal(title, bodyHtml, onOk, okLabel = '确定', okClass = 'danger') {
   $('modal-title').textContent = title;
   $('modal-body').innerHTML = bodyHtml;
   modalOkFn = onOk;
+  const okBtn = $('modal-ok');
+  okBtn.textContent = okLabel;
+  okBtn.className = `btn ${okClass}`.trim();
   $('modal').hidden = false;
 }
 function hideModal() {

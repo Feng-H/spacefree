@@ -170,7 +170,8 @@ export function startServer(port?: number): http.Server {
           step: (m) => { bus.progress(m); bus.log(m); },
         })
           .then((results) => {
-            bus.publish('clean-done', { dry, ok: results.every((r) => r.ok) });
+            const skipped = results.flatMap((r) => r.skipped ?? []);
+            bus.publish('clean-done', { dry, ok: results.every((r) => r.ok), skipped, opsCount: ops.length });
             bus.progress(dry ? '预演完成' : '清理完成');
           })
           .catch((err) => bus.log(`清理异常: ${err instanceof Error ? err.message : String(err)}`))
