@@ -818,6 +818,22 @@ export class Tui {
       return active ? C.bgTab + C.white + C.bold + ` ${label} ` + C.reset : C.gray + ` ${label} ` + C.reset;
     }).join('');
     out.push(' ' + tabStr);
+    // 常驻快捷键行（按模式切换内容；前缀=当前选择统计）
+    let keys: string;
+    const selT = this.selTotals();
+    const selPart = selT.n > 0
+      ? C.bold + (this.dryPreviewed ? C.green : C.yellow) + `已选 ${selT.n} 项 ~${fmtKB(selT.k)}` + (this.dryPreviewed ? ' ✓已预演' : '') + C.reset + C.gray + ' ┃ '
+      : '';
+    if (this.mode === 'help') keys = '任意键进入主界面 · q 退出';
+    else if (this.mode === 'input') keys = 'enter 确认 · esc 取消';
+    else if (this.mode === 'log') keys = this.busy
+      ? 'j/k 滚动 · Ctrl+C 退出'
+      : this.lastExecSummary ? 'q/esc 返回 · r 重扫刷新 · j/k 滚动'
+      : this.dryPreviewed ? C.bold + 'x 输入yes执行' + C.reset + C.gray + ' · q/esc 返回 · r 重扫' : 'q/esc 返回 · r 重扫 · j/k 滚动';
+    else if (this.visual) keys = C.bold + '拖选中: ↑↓/jk/G 批量勾选 · v/esc 结束' + C.reset;
+    else if (this.busy) keys = '任务中: 操作键已锁定 · 1-7 切页 · j/k 移动 · q/Ctrl+C 退出';
+    else keys = 'space 勾选 · v 拖选 · a 全选 · / 搜索 · s 排序 · d 预演 · x 执行 · r 重扫 · ? 帮助 · q 退出';
+    out.push(C.gray + ' ⌨ ' + selPart + keys + C.reset);
     out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
 
     if (this.mode === 'help') {
@@ -880,7 +896,7 @@ export class Tui {
     }
 
     if (this.mode === 'log') {
-      const bodyH = H - 8;
+      const bodyH = H - 7;
       const total = this.logLines.length;
       let start = 0;
       if (this.logFollow) start = Math.max(0, total - bodyH);
@@ -893,7 +909,7 @@ export class Tui {
 
     // 表格
     const rows = this.buildRows();
-    const bodyH = H - 8;
+    const bodyH = H - 7;
     if (rows.length === 0) {
       out.push(C.gray + ' （无数据 — ' + (this.filter ? '无匹配项，esc 清除过滤' : '尚未扫描，按 r 开始') + '）' + C.reset);
     }
@@ -925,30 +941,8 @@ export class Tui {
     } else if (this.lastExecSummary && this.mode === 'log') {
       out.push(' ' + C.green + this.lastExecSummary + C.reset);
     }
-    // 帮助行
-    let help: string;
-    if (this.mode === 'log') {
-      help = this.busy
-        ? ' ↑↓/jk 滚动日志 · Ctrl+C 立即退出'
-        : this.lastExecSummary
-          ? C.bold + C.green + ' q/esc 返回列表 · r 重新扫描刷新数据（推荐）' + C.reset + C.gray + ' · ↑↓/jk/G 滚动'
-          : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');
-    } else if (this.mode === 'input') {
-      help = ' enter 确认 · esc 取消';
-    } else if (this.visual) {
-      help = C.bold + ' 拖选模式: ↑↓/jk/G 拖选 · v/esc 结束' + C.reset + C.gray + ' · a 全选候选 · q 退出';
-    } else if (this.tab === 'history') {
-      help = ' ↑↓/jk 移动 · enter 重装该条 · r 重扫 · ←→ 切页 · q 退出';
-    } else if (this.tab === 'settings') {
-      help = ' ↑↓ 选择 · enter 修改 · h 装钩子 · b 导出 Brewfile · q 退出';
-    } else {
-      const { n, k } = this.selTotals();
-      const selPart = n > 0 ? C.bold + `已选 ${n} 项 ~${fmtKB(k)}` + (this.dryPreviewed ? C.green + ' ✓已预演' + C.reset : '') + ' · ' : '';
-      help = ' space 勾选 · v 拖选 · a 全选候选 · / 搜索 · d 预演 · x 执行 · ? 帮助 · ' + selPart + 'q 退出';
-    }
     while (out.length < H - 1) out.push('');
     out.length = Math.min(out.length, H - 1);
-    out.push(' ' + C.gray + trunc(help.replace(/\x1b\[[0-9;]*m/g, ''), W - 2) + C.reset);
 
     // 一次性写出
     let buf = '\x1b[H';
