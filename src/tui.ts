@@ -108,7 +108,7 @@ export class Tui {
   private selP = new Set<string>();   // project path
 
   private filter = '';
-  private mode: 'table' | 'log' | 'input' = 'table';
+  private mode: 'table' | 'log' | 'input' | 'help' = 'help';
   private input: InputState | null = null;
   private busy = false;
   private busyMsg = '';
@@ -475,6 +475,11 @@ export class Tui {
     if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
       this.quitNow(); return;
     }
+    if (this.mode === 'help') {
+      if (key.name === 'q') this.quitNow();
+      else { this.mode = 'table'; this.render(); }
+      return;
+    }
     if (this.busy && this.mode === 'log') {
       if (key.name === 'up' || key.name === 'k') { this.logFollow = false; this.scrollLog(-1); }
       else if (key.name === 'down' || key.name === 'j') { this.scrollLog(1); }
@@ -647,6 +652,7 @@ export class Tui {
       this.sortIdx[this.tab] = ((this.sortIdx[this.tab] ?? 0) + 1) % (this.sortDefs[this.tab]?.length ?? 1);
       this.render(); return;
     }
+    if ((key.sequence ?? '') === '?') { this.mode = 'help'; this.render(); return; }
     if (name === 'v' && rows.length > 0) {
       this.visual = true;
       this.visualAnchor = this.cursor;
@@ -814,6 +820,40 @@ export class Tui {
     out.push(' ' + tabStr);
     out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
 
+    if (this.mode === 'help') {
+      out.push('');
+      out.push(C.bold + C.white + '   🧹 SpaceFree · 快捷键速查' + C.reset + C.gray + '   （按任意键进入主界面 · 之后随时按 ? 呼出 · q 退出）' + C.reset);
+      out.push('');
+      const section = (t: string) => out.push(C.cyan + C.bold + '   ── ' + t + ' ' + C.reset + C.gray + '─'.repeat(Math.max(W - 20 - t.length * 2, 6)) + C.reset);
+      const row2 = (k: string, d: string) => out.push('     ' + C.yellow + C.bold + pad(k, 22) + C.reset + C.gray + d + C.reset);
+      section('页签');
+      row2('1-7 / ←→', 'Homebrew · 应用 · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
+      section('浏览与选择');
+      row2('↑/k  ↓/j', '上下移动光标          g / G: 跳到顶部 / 底部');
+      row2('空格', '勾选/取消当前行（任何行可选；非候选勾选后显示黄色 [!] 警告）');
+      row2('v', '批量拖选（vim 风格）：进入后移动光标整批勾选/取消，再按 v 结束');
+      row2('a / A', '全选候选 / 清空全部选择');
+      row2('/  搜索', '输入关键字过滤（enter 结束输入，esc 返回，内容保留）');
+      row2('s', '切换排序列（大小 / 名称 / 时间 …）');
+      section('执行清理（安全流程）');
+      row2('d', 'Dry-run 预演：只输出计划不删除，日志页实时显示安全复核过程');
+      row2('x', '执行清理：需先预演；输入 yes 回车才真正删除（输错=取消）');
+      row2('r', '重新扫描（约 1 分钟；任务中操作键自动锁定，完成后解锁）');
+      row2('q / Ctrl+C', '彻底退出（随时，含扫描/执行中）');
+      section('各页签专用键');
+      row2('历史页 enter', '一键重装该条记录删除的包');
+      row2('设置页 enter/h/b', '修改阈值·宽限·保护名单 / 装监控钩子 / 导出 Brewfile 留底');
+      row2('缓存页 c / n', '清 brew 缓存 / 用官方命令清开发缓存（npm·pip·uv…）');
+      section('标记说明');
+      out.push(C.gray + '     [x] 已选候选(绿)   [!] 已选非候选(黄,警告)   [ ] 未选' + C.reset);
+      out.push(C.gray + '     🔴从未使用  🟠久未使用  🟢在用  🔗被依赖  ⛔已阻止  🔵待复核' + C.reset);
+      out.push('');
+      if (this.busy) out.push(C.cyan + `   ⏳ ${this.busyMsg}` + C.reset);
+      else if (this.state) out.push(C.gray + `   数据: 扫描于 ${fmtDate(this.state.scannedAt)}（按 r 刷新）` + C.reset);
+      this.finish(out, W, H);
+      return;
+    }
+
     if (this.tab === 'cache' && this.mode === 'table') {
       const cache = this.state?.cache;
       out.push('');
@@ -904,7 +944,7 @@ export class Tui {
     } else {
       const { n, k } = this.selTotals();
       const selPart = n > 0 ? C.bold + `已选 ${n} 项 ~${fmtKB(k)}` + (this.dryPreviewed ? C.green + ' ✓已预演' + C.reset : '') + ' · ' : '';
-      help = ' space 勾选 · v 批量拖选 · a 全选候选 · / 搜索 · d 预演 · x 执行 · ' + selPart + 'q 退出';
+      help = ' space 勾选 · v 拖选 · a 全选候选 · / 搜索 · d 预演 · x 执行 · ? 帮助 · ' + selPart + 'q 退出';
     }
     while (out.length < H - 1) out.push('');
     out.length = Math.min(out.length, H - 1);
