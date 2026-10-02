@@ -1,6 +1,6 @@
 {
   "name": "macos-dynamic-space-free",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "macOS 动态磁盘清理工具：基于程序/包的真实使用频率智能清理 Homebrew 包、应用、安装包与缓存（终端核心 + Web 仪表盘）",
   "type": "module",
   "bin": {
