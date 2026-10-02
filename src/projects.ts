@@ -25,11 +25,12 @@ export interface ProjectEntry {
 const DEP_NAMES = ['node_modules', '.venv', 'venv'];
 
 function isProject(dir: string): boolean {
-  try {
-    for (const name of DEP_NAMES) {
-      if (fs.statSync(path.join(dir, name)).isDirectory()) return true;
-    }
-  } catch { /* not a project */ }
+  for (const name of DEP_NAMES) {
+    const full = path.join(dir, name);
+    try {
+      if (fs.statSync(full).isDirectory()) return true;
+    } catch { /* 此依赖名不存在，继续查下一个 */ }
+  }
   return false;
 }
 
@@ -79,6 +80,18 @@ async function findAgentProjects(log: (m: string) => void): Promise<string[]> {
         const sub: string[] = [];
         walkProjects(dir, 2, sub); // 标记在上层（如 ~/pidev），扫子目录
         for (const p of sub) {
+          if (!seen.has(p)) { seen.add(p); out.push(p); }
+        }
+      }
+      // 向上提升一层：标记常在项目内，而 harness 工作区根在其上一层
+      // （如 ZCodeProject/xhsz/AGENTS.md → 工作区根 ZCodeProject 下还有多个无标记的兄弟项目）
+      const parent = path.dirname(dir);
+      const parentOk = parent.startsWith(home + '/') && parent !== home
+        && !parent.includes('/Library/') && !parent.includes('/.Trash/');
+      if (parentOk) {
+        const sub2: string[] = [];
+        walkProjects(parent, 2, sub2);
+        for (const p of sub2) {
           if (!seen.has(p)) { seen.add(p); out.push(p); }
         }
       }
