@@ -477,7 +477,13 @@ export class Tui {
     }
     if (this.mode === 'help') {
       if (key.name === 'q') this.quitNow();
-      else { this.mode = 'table'; this.render(); }
+      else {
+        this.mode = 'table';
+        const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
+        const seq = key.sequence ?? '';
+        if (numTab[seq]) { this.tab = numTab[seq]; this.cursor = 0; this.offset = 0; }
+        this.render();
+      }
       return;
     }
     if (this.busy && this.mode === 'log') {
