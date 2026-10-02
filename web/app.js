@@ -514,7 +514,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   connectSSE();
   loadAll();
+  loadHistory();
 });
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history');
+    const list = await r.json();
+    const box = $('history-box');
+    if (!Array.isArray(list) || list.length === 0) return;
+    box.classList.remove('muted');
+    box.innerHTML = list.map((h) => {
+      const t = new Date(h.time * 1000);
+      const time = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')} ${t.toTimeString().slice(0, 8)}`;
+      const skip = h.skipped?.length
+        ? ` <span class="h-skip">跳过: ${esc(h.skipped.join('、'))}</span>`
+        : '';
+      return `<div><span class="h-time">${time}</span><span class="${h.ok ? 'h-ok' : 'h-fail'}">${h.ok ? '✅' : '⚠️'}</span> ${esc((h.actions ?? []).join('；'))}${skip}</div>`;
+    }).join('');
+  } catch { /* ignore */ }
+}
 
 let modalOkFn = null;
 function showModal(title, bodyHtml, onOk, okLabel = '确定', okClass = 'danger') {

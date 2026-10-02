@@ -7,6 +7,7 @@ export const DATA_DIR = path.join(os.homedir(), '.spacefree');
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 export const EVENTS_PATH = path.join(DATA_DIR, 'events.jsonl');
 export const STATE_PATH = path.join(DATA_DIR, 'state.json');
+export const HISTORY_PATH = path.join(DATA_DIR, 'history.jsonl');
 
 export function ensureDataDir(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });
