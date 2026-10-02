@@ -1,0 +1,227 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { EventEmitter } from 'node:events';
+import { loadConfig, saveConfig, type Config } from './config.js';
+import { runScan, loadState, type ScanState } from './scanner.js';
+import { plan, type PlanResult } from './plan.js';
+import { runOps, type Op } from './cleaner.js';
+import { hookStatus, installHook, uninstallHook, selfTestHook, esloggerDaemonPlist, type ShellKind } from './hook.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const WEB_ROOT = path.resolve(__dirname, '../web');
+
+export class Bus extends EventEmitter {
+  publish(event: string, data: unknown): void {
+    this.emit('message', { event, data, ts: Date.now() });
+  }
+  log(msg: string): void {
+    this.publish('log', msg);
+  }
+  progress(msg: string): void {
+    this.publish('progress', msg);
+  }
+}
+
+interface Job {
+  running: boolean;
+  kind: 'scan' | 'clean';
+}
+
+export function startServer(port?: number): http.Server {
+  const bus = new Bus();
+  bus.setMaxListeners(100);
+  const job: Job = { running: false, kind: 'scan' };
+
+  const getPlan = (): PlanResult | null => {
+    const state = loadState();
+    if (!state) return null;
+    return plan(state, loadConfig());
+  };
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const pathname = decodeURIComponent(url.pathname);
+
+    // --- SSE ---
+    if (pathname === '/api/events' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      const send = (msg: { event: string; data: unknown; ts: number }) => {
+        res.write(`id: ${msg.ts}\nevent: ${msg.event}\ndata: ${JSON.stringify(msg.data)}\n\n`);
+      };
+      bus.on('message', send);
+      const ping = setInterval(() => res.write(': ping\n\n'), 20_000);
+      req.on('close', () => {
+        clearInterval(ping);
+        bus.off('message', send);
+      });
+      return;
+    }
+
+    // --- static ---
+    if (req.method === 'GET' && !pathname.startsWith('/api/')) {
+      const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+      const file = path.normalize(path.join(WEB_ROOT, rel));
+      if (!file.startsWith(WEB_ROOT)) {
+        res.writeHead(403).end('forbidden');
+        return;
+      }
+      let content: Buffer;
+      try {
+        content = fs.readFileSync(file);
+      } catch {
+        res.writeHead(404).end('not found');
+        return;
+      }
+      const types: Record<string, string> = {
+        '.html': 'text/html; charset=utf-8',
+        '.js': 'text/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.ico': 'image/x-icon',
+      };
+      res.writeHead(200, { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream' });
+      res.end(content);
+      return;
+    }
+
+    const json = (code: number, data: unknown) => {
+      res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(data));
+    };
+    const readBody = (): Promise<any> =>
+      new Promise((resolve) => {
+        let raw = '';
+        req.on('data', (c) => { raw += c; if (raw.length > 5_000_000) req.destroy(); });
+        req.on('end', () => {
+          try { resolve(raw ? JSON.parse(raw) : {}); } catch { resolve({}); }
+        });
+      });
+
+    try {
+      // --- API ---
+      if (pathname === '/api/state' && req.method === 'GET') {
+        const state: ScanState | null = loadState();
+        const p = getPlan();
+        if (!state || !p) { json(404, { error: '尚未扫描，请先执行扫描' }); return; }
+        const cfg = loadConfig();
+        json(200, {
+          state,
+          plan: p,
+          config: cfg,
+          hook: hookStatus(),
+          job,
+        });
+        return;
+      }
+
+      if (pathname === '/api/scan' && req.method === 'POST') {
+        if (job.running) { json(409, { error: '已有任务在执行' }); return; }
+        job.running = true; job.kind = 'scan';
+        const cfg0 = loadConfig();
+        runScan(cfg0, (m) => bus.log(m), (m) => bus.progress(m))
+          .then((state) => {
+            bus.progress('扫描完成');
+            bus.publish('scan-done', { scannedAt: state.scannedAt });
+          })
+          .catch((err) => {
+            bus.log(`扫描失败: ${err instanceof Error ? err.message : String(err)}`);
+            bus.progress('扫描失败');
+          })
+          .finally(() => { job.running = false; });
+        json(202, { ok: true, message: '扫描已开始' });
+        return;
+      }
+
+      if (pathname === '/api/plan' && req.method === 'POST') {
+        const body = await readBody();
+        const cfg: Config = { ...loadConfig(), ...(typeof body.thresholdDays === 'number' ? { thresholdDays: body.thresholdDays } : {}) };
+        const state = loadState();
+        if (!state) { json(404, { error: '尚未扫描' }); return; }
+        json(200, plan(state, cfg));
+        return;
+      }
+
+      if (pathname === '/api/execute' && req.method === 'POST') {
+        if (job.running) { json(409, { error: '已有任务在执行' }); return; }
+        const body = await readBody();
+        const ops = (body.ops ?? []) as Op[];
+        const dry = body.dry !== false;
+        if (!Array.isArray(ops) || ops.length === 0) { json(400, { error: 'ops 为空' }); return; }
+        job.running = true; job.kind = 'clean';
+        bus.log(`开始${dry ? '预演' : '执行'}清理（${ops.length} 组操作）`);
+        runOps(ops, dry, {
+          log: (m) => bus.log(m),
+          step: (m) => { bus.progress(m); bus.log(m); },
+        })
+          .then((results) => {
+            bus.publish('clean-done', { dry, ok: results.every((r) => r.ok) });
+            bus.progress(dry ? '预演完成' : '清理完成');
+          })
+          .catch((err) => bus.log(`清理异常: ${err instanceof Error ? err.message : String(err)}`))
+          .finally(() => { job.running = false; });
+        json(202, { ok: true, message: dry ? '预演已开始' : '清理已开始' });
+        return;
+      }
+
+      if (pathname === '/api/settings' && req.method === 'GET') {
+        json(200, { config: loadConfig(), hook: hookStatus() });
+        return;
+      }
+      if (pathname === '/api/settings' && req.method === 'POST') {
+        const body = await readBody();
+        const cfg = loadConfig();
+        if (typeof body.thresholdDays === 'number' && body.thresholdDays >= 1) cfg.thresholdDays = Math.floor(body.thresholdDays);
+        if (typeof body.graceDays === 'number' && body.graceDays >= 0) cfg.graceDays = Math.floor(body.graceDays);
+        if (Array.isArray(body.protect)) cfg.protect = body.protect.filter((x: unknown) => typeof x === 'string' && x.trim()).map((x: string) => x.trim());
+        if (typeof body.includeZip === 'boolean') cfg.includeZip = body.includeZip;
+        saveConfig(cfg);
+        json(200, { ok: true, config: cfg });
+        return;
+      }
+
+      if (pathname === '/api/hook' && req.method === 'POST') {
+        const body = await readBody();
+        const action = body.action as string;
+        if (action === 'install' || action === 'uninstall') {
+          const shells: ShellKind[] = Array.isArray(body.shells) && body.shells.length > 0
+            ? body.shells.filter((s: string) => ['zsh', 'bash', 'fish'].includes(s))
+            : ['zsh'];
+          const results = action === 'install' ? installHook(shells) : uninstallHook(shells);
+          for (const r of results) bus.log(`hook ${r.shell}: ${r.message} (${r.file})`);
+          if (action === 'install') {
+            const test = await selfTestHook();
+            bus.log(`hook 自测: ${test.ok ? '通过' : '失败'} — ${test.detail}`);
+            json(200, { ok: true, results, selfTest: test });
+            return;
+          }
+          json(200, { ok: true, results });
+          return;
+        }
+        if (action === 'status') { json(200, hookStatus()); return; }
+        json(400, { error: '未知 action' });
+        return;
+      }
+
+      if (pathname === '/api/eslogger-plist' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+        res.end(esloggerDaemonPlist());
+        return;
+      }
+
+      json(404, { error: 'not found' });
+    } catch (err) {
+      json(500, { error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  const cfg = loadConfig();
+  server.listen(port ?? cfg.port);
+  return server;
+}

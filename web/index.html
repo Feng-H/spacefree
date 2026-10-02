@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpaceFree · macOS 动态磁盘清理</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">🧹</div>
+      <div>
+        <h1>SpaceFree</h1>
+        <p class="sub">macOS 动态磁盘清理 · 按真实使用频率</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="chip" id="chip-scan" title="最近扫描时间">未扫描</div>
+      <div class="chip" id="chip-hook" title="Shell 使用监控钩子">监控: 检测中</div>
+      <button class="btn" id="btn-rescan">重新扫描</button>
+      <button class="btn primary" id="btn-first-scan" hidden>开始首次扫描</button>
+    </div>
+  </header>
+
+  <div class="progress-wrap" id="progress-wrap" hidden>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="progress-text" id="progress-text">准备中…</div>
+  </div>
+
+  <main id="main" hidden>
+    <section class="cards">
+      <div class="card">
+        <div class="card-num" id="card-total">—</div>
+        <div class="card-label">可释放估算（brew 包 + 应用）</div>
+      </div>
+      <div class="card">
+        <div class="card-num" id="card-brew">—</div>
+        <div class="card-label">brew 包候选 / 总数</div>
+      </div>
+      <div class="card">
+        <div class="card-num" id="card-apps">—</div>
+        <div class="card-label">应用候选（久未打开）</div>
+      </div>
+      <div class="card">
+        <div class="card-num" id="card-cache">—</div>
+        <div class="card-label">brew 缓存可释放</div>
+      </div>
+      <div class="card">
+        <div class="card-num" id="card-downloads">—</div>
+        <div class="card-label">下载目录安装包</div>
+      </div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="brew">🍺 Homebrew</button>
+      <button class="tab" data-tab="apps">🖥 应用</button>
+      <button class="tab" data-tab="downloads">📦 下载安装包</button>
+      <button class="tab" data-tab="cache">🧊 缓存</button>
+      <button class="tab" data-tab="settings">⚙️ 设置与监控</button>
+      <button class="tab" data-tab="log">📜 日志</button>
+    </nav>
+
+    <section id="panel-brew" class="panel">
+      <div class="toolbar">
+        <label>阈值 <input type="number" id="days" min="1" max="720" style="width:5em"> 天未使用视为可清理</label>
+        <input type="search" id="brew-search" placeholder="搜索包名…">
+        <select id="brew-filter">
+          <option value="all">全部状态</option>
+          <option value="cand">仅可清理候选</option>
+          <option value="unused">从未使用</option>
+          <option value="stale">久未使用</option>
+          <option value="needed">被依赖（不可删）</option>
+          <option value="blocked">已阻止</option>
+          <option value="review">待复核</option>
+          <option value="keep">保留</option>
+        </select>
+        <span class="spacer"></span>
+        <button class="btn small" id="btn-select-cand">全选候选</button>
+      </div>
+      <div class="table-wrap">
+        <table id="brew-table">
+          <thead>
+            <tr>
+              <th class="w-check"></th>
+              <th data-sort="name" class="sortable">包名</th>
+              <th data-sort="sizeK" class="sortable num">大小</th>
+              <th data-sort="installedAt" class="sortable">安装于</th>
+              <th data-sort="lastUsed" class="sortable">最后使用</th>
+              <th data-sort="usageCount" class="sortable num">次数</th>
+              <th>被依赖 / 状态原因</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h4 class="subtable-title">Cask（GUI 应用包）</h4>
+      <div class="table-wrap">
+        <table id="cask-table">
+          <thead>
+            <tr>
+              <th class="w-check"></th>
+              <th data-sort="token" class="sortable">酒桶名</th>
+              <th data-sort="sizeK" class="sortable num">大小</th>
+              <th data-sort="installedAt" class="sortable">安装于</th>
+              <th data-sort="lastUsed" class="sortable">最后打开</th>
+              <th data-sort="useCount" class="sortable num">次数</th>
+              <th>状态原因</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="panel-apps" class="panel" hidden>
+      <div class="toolbar">
+        <input type="search" id="app-search" placeholder="搜索应用…">
+        <select id="app-filter">
+          <option value="all">全部</option>
+          <option value="stale">久未打开（候选）</option>
+          <option value="review">无使用记录</option>
+          <option value="keep">最近在用</option>
+          <option value="blocked">系统/受管</option>
+        </select>
+        <span class="spacer"></span>
+        <button class="btn small" id="btn-select-apps">全选候选</button>
+      </div>
+      <div class="table-wrap">
+        <table id="app-table">
+          <thead>
+            <tr>
+              <th class="w-check"></th>
+              <th data-sort="name" class="sortable">应用</th>
+              <th data-sort="sizeK" class="sortable num">大小</th>
+              <th data-sort="lastUsed" class="sortable">最后打开</th>
+              <th data-sort="useCount" class="sortable num">打开次数</th>
+              <th>状态原因</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="panel-downloads" class="panel" hidden>
+      <div class="toolbar">
+        <span class="muted">下载目录中的 .dmg / .pkg 安装包（删除 = 移入废纸篓，可恢复）</span>
+        <span class="spacer"></span>
+        <button class="btn small" id="btn-select-downloads">全选</button>
+      </div>
+      <div class="table-wrap">
+        <table id="dl-table">
+          <thead>
+            <tr>
+              <th class="w-check"></th>
+              <th data-sort="file" class="sortable">文件</th>
+              <th data-sort="sizeK" class="sortable num">大小</th>
+              <th data-sort="modifiedAt" class="sortable">修改时间</th>
+              <th>类型</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="panel-cache" class="panel" hidden>
+      <div class="card wide">
+        <h3>Homebrew 缓存</h3>
+        <p id="cache-info">—</p>
+        <button class="btn warn" id="btn-clean-cache">执行 brew cleanup --prune=all</button>
+      </div>
+    </section>
+
+    <section id="panel-settings" class="panel" hidden>
+      <div class="settings-grid">
+        <div class="card wide">
+          <h3>清理策略</h3>
+          <label>阈值天数（多久未使用 → 可清理）<input type="number" id="set-days" min="1" max="720"></label>
+          <label>宽限期天数（新装包多少天内不判定）<input type="number" id="set-grace" min="0" max="365"></label>
+          <label>保护名单（每行一个 formula，永不清理）
+            <textarea id="set-protect" rows="4"></textarea>
+          </label>
+          <label class="inline"><input type="checkbox" id="set-zip"> 扫描 .zip（可能有误报）</label>
+          <button class="btn primary" id="btn-save-settings">保存设置</button>
+        </div>
+        <div class="card wide">
+          <h3>使用监控钩子</h3>
+          <p class="muted">钩子会在你每次敲命令时记录"哪个 brew 包被调用"（纯 shell 内建实现，&lt;1ms 开销）。卸载随时可逆。安装时会顺带开启 zsh 历史时间戳（EXTENDED_HISTORY），让历史数据也能提供"最后使用时间"。</p>
+          <div class="hook-status" id="hook-status">检测中…</div>
+          <div class="row">
+            <button class="btn" id="btn-hook-install">安装钩子（zsh）</button>
+            <button class="btn" id="btn-hook-uninstall">卸载钩子</button>
+          </div>
+          <div class="muted" id="usage-summary"></div>
+        </div>
+        <div class="card wide">
+          <h3>进阶：全局进程监控（可选）</h3>
+          <p class="muted">Shell 钩子只能记录"终端里敲的命令"。如需监控 GUI/后台对 brew 程序的调用（如 IDE 调用 clang-format），可安装 eslogger LaunchDaemon（需要管理员）。<a href="/api/eslogger-plist" download="com.spacefree.eslogger.plist">下载 plist</a> 后按文件内注释安装。SpaceFree 会自动解析其日志并计入使用统计。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-log" class="panel" hidden>
+      <div class="log" id="log"></div>
+    </section>
+  </main>
+
+  <div class="empty" id="empty">
+    <div class="empty-icon">🧹</div>
+    <h2>欢迎使用 SpaceFree</h2>
+    <p>首次使用请先全量扫描：读取 Homebrew 清单、使用历史、应用使用记录与缓存占用。</p>
+    <p class="muted">提示：安装监控钩子后，"最后使用时间"会随日常使用自动更新，判定会越来越准。</p>
+    <button class="btn primary big" id="btn-empty-scan">开始扫描</button>
+  </div>
+
+  <footer class="action-bar" id="action-bar" hidden>
+    <div class="sel-info" id="sel-info"></div>
+    <div class="row">
+      <button class="btn" id="btn-clear-sel">清除选择</button>
+      <button class="btn warn" id="btn-preview">预览清理（Dry-run）</button>
+      <button class="btn danger" id="btn-execute" hidden>确认执行</button>
+    </div>
+  </footer>
+
+  <div class="modal-mask" id="modal" hidden>
+    <div class="modal">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="row right">
+        <button class="btn" id="modal-cancel">取消</button>
+        <button class="btn danger" id="modal-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
