@@ -16,15 +16,26 @@ __spacefree_preexec() {
   local cmd=\${1%%[[:space:]]*}
   [[ -n \$cmd ]] || return 0
   [[ \$cmd == */* ]] && cmd=\${cmd:t}          # 绝对路径调用取文件名
-  local p=\${commands[\$cmd]-}
-  [[ -n \$p ]] || return 0
-  p=\${p:A}                                   # 解析符号链接到真实 Cellar 路径
-  case \$p in
-    */Cellar/*|*/Caskroom/*) ;;
-    *) return 0 ;;
-  esac
-  local f=\${p#*Cellar/}; f=\${f%%/*}
-  [[ \$p == */Caskroom/* ]] && { f=\${p#*Caskroom/}; f=\${f%%/*}; }
+  local f=""
+  if [[ \$cmd == brew ]]; then
+    # brew services run/start/restart <包名> → 计为使用该包（服务类监控盲区补丁）
+    local -a w
+    w=(\${(z)1})
+    if [[ \${#w} -ge 4 && \${w[2]} == services && \${w[3]} == (run|start|restart) ]]; then
+      f=\${w[4]}
+    fi
+  else
+    local p=\${commands[\$cmd]-}
+    [[ -n \$p ]] || return 0
+    p=\${p:A}                                   # 解析符号链接到真实 Cellar 路径
+    case \$p in
+      */Cellar/*|*/Caskroom/*) ;;
+      *) return 0 ;;
+    esac
+    f=\${p#*Cellar/}; f=\${f%%/*}
+    [[ \$p == */Caskroom/* ]] && { f=\${p#*Caskroom/}; f=\${f%%/*}; }
+  fi
+  [[ -n \$f ]] || return 0
   [[ -d \$HOME/.spacefree ]] || return 0
   local now=\${(%):-%D{%s}}
   [[ \$_sf_last == "\$f:\$((now/60))" ]] && return 0
@@ -177,15 +188,20 @@ export async function selfTestHook(): Promise<{ ok: boolean; detail: string }> {
   const eventFile = path.join(dir, 'events.jsonl');
   const script = `${ZSH_HOOK.replace(/\$HOME\/\.spacefree\/events\.jsonl/g, eventFile)}
 __spacefree_preexec "git status"
-sleep 0.1
+__spacefree_preexec "brew services run ollama"
+__spacefree_preexec "brew services stop postgresql@16"
 __spacefree_preexec "nonexistent-command-xyz"
 `;
   const r = await exec('zsh', ['-c', script], { timeoutMs: 15_000 });
   let logged = '';
   try { logged = fs.readFileSync(eventFile, 'utf8').trim(); } catch { /* none */ }
   fs.rmSync(dir, { recursive: true, force: true });
-  const ok = /^\d+\tgit$/m.test(logged) && r.code === 0;
-  return { ok, detail: ok ? `自测通过，示例事件: ${logged.split('\n')[0]}` : `自测失败 (exit ${r.code})，输出: ${r.stdout}|${r.stderr}|log=${logged}` };
+  const lines = logged.split('\n');
+  const okGit = /^\d+\tgit$/m.test(logged);
+  const okSvc = /^\d+\tollama$/m.test(logged);
+  const noStop = !/\tpostgresql@16$/.test(logged);   // stop 不计为使用
+  const ok = okGit && okSvc && noStop && r.code === 0;
+  return { ok, detail: ok ? `自测通过: 直接命令→git ✓, 服务启动→ollama ✓, stop 不计数 ✓` : `自测失败 (exit ${r.code})，输出: ${r.stdout}|${r.stderr}|log=${logged}` };
 }
 
 /** Generate a LaunchDaemon plist for root-level process monitoring via eslogger (advanced, optional). */
