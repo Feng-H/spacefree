@@ -117,6 +117,9 @@ export class Tui {
   private logLines: string[] = [];
   private logFollow = true;
   private dryPreviewed = false;
+  private visual = false;
+  private visualAnchor = 0;
+  private visualTarget = true;
   private lastExecSummary = '';
   private running = true;
   private renderQueued = false;
@@ -204,7 +207,7 @@ export class Tui {
           key: `f:${f.name}`,
           candidate: cand,
           cells: [
-            (this.selF.has(f.name) ? C.green + '[x]' + C.reset : cand ? C.dim + '[ ]' + C.reset : C.dim + ' · ' + C.reset) + ' ',
+            this.selMark(this.selF.has(f.name), cand) + ' ',
             padTrunc(f.name, 24),
             pad(fmtKB(f.sizeK), 10),
             pad(f.installedAt ? fmtDays(f.installedAt) : '—', 9),
@@ -223,7 +226,7 @@ export class Tui {
           key: `c:${c.token}`,
           candidate: cand,
           cells: [
-            (this.selC.has(c.token) ? C.green + '[x]' + C.reset : cand ? C.dim + '[ ]' + C.reset : C.dim + ' · ' + C.reset) + ' ',
+            this.selMark(this.selC.has(c.token), cand) + ' ',
             padTrunc(C.magenta + c.token + C.reset, 24),
             pad(fmtKB(c.sizeK), 10),
             pad(c.installedAt ? fmtDays(c.installedAt) : '—', 9),
@@ -247,7 +250,7 @@ export class Tui {
           key: `a:${a.path}`,
           candidate: cand,
           cells: [
-            (this.selA.has(a.path) ? C.green + '[x]' + C.reset : cand ? C.dim + '[ ]' + C.reset : C.dim + ' · ' + C.reset) + ' ',
+            this.selMark(this.selA.has(a.path), cand) + ' ',
             padTrunc(a.name, 30),
             pad(fmtKB(a.sizeK), 10),
             pad(a.lastUsed ? fmtDays(a.lastUsed) : '无记录', 9),
@@ -269,7 +272,7 @@ export class Tui {
           key: `d:${d.file}`,
           candidate: true,
           cells: [
-            (this.selD.has(d.file) ? C.green + '[x]' + C.reset : C.dim + '[ ]' + C.reset) + ' ',
+            this.selMark(this.selD.has(d.file), true) + ' ',
             padTrunc(path.basename(d.file), 50),
             pad(fmtKB(d.sizeK), 10),
             pad(fmtDays(d.modifiedAt), 9),
@@ -290,7 +293,7 @@ export class Tui {
           key: `p:${pr.path}`,
           candidate: cand,
           cells: [
-            (this.selP.has(pr.path) ? C.green + '[x]' + C.reset : cand ? C.dim + '[ ]' + C.reset : C.dim + ' · ' + C.reset) + ' ',
+            this.selMark(this.selP.has(pr.path), cand) + ' ',
             padTrunc(pr.name, 26),
             pad(fmtKB(pr.depSizeK), 10),
             padTrunc(pr.depNames.join('+'), 14),
@@ -348,6 +351,12 @@ export class Tui {
       return rows;
     }
     return rows;
+  }
+
+  /** 勾选标记：候选=绿色[x]，非候选主动勾选=黄色[!]警告 */
+  private selMark(selected: boolean, cand: boolean): string {
+    if (selected) return cand ? C.green + '[x]' + C.reset : C.yellow + '[!]' + C.reset;
+    return C.dim + '[ ]' + C.reset;
   }
 
   private verdictCell(v: Verdict): string {
@@ -553,9 +562,48 @@ export class Tui {
     this.render();
   }
 
+  private isRowSelected(row: Row): boolean {
+    const [kind, ...rest] = row.key.split(':');
+    const val = rest.join(':');
+    return (kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD).has(val);
+  }
+
+  private setRowSel(row: Row, sel: boolean): void {
+    const [kind, ...rest] = row.key.split(':');
+    const val = rest.join(':');
+    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD;
+    if (sel) set.add(val); else set.delete(val);
+  }
+
+  private applyVisual(rows: Row[]): void {
+    const lo = Math.min(this.visualAnchor, this.cursor);
+    const hi = Math.max(this.visualAnchor, this.cursor);
+    for (let i = lo; i <= hi && i < rows.length; i++) {
+      if (rows[i].key.startsWith('h:') || rows[i].key.startsWith('s:')) continue; // 历史/设置行不可选
+      this.setRowSel(rows[i], this.visualTarget);
+    }
+    this.dryPreviewed = false;
+  }
+
   private handleTableKey(key: any): void {
     const rows = this.buildRows();
     const name = key.name as string | undefined;
+
+    // ── visual 批量拖选模式 ──
+    if (this.visual) {
+      if (name === 'v' || name === 'escape' || name === 'return' || name === 'enter' || name === 'q') {
+        this.visual = false;
+        this.render();
+        return;
+      }
+      let moved = false;
+      if (name === 'up' || name === 'k') { this.cursor = Math.max(0, this.cursor - 1); moved = true; }
+      else if (name === 'down' || name === 'j') { this.cursor = Math.min(Math.max(rows.length - 1, 0), this.cursor + 1); moved = true; }
+      else if (name === 'g') { this.cursor = 0; moved = true; }
+      else if (name === 'G') { this.cursor = Math.max(rows.length - 1, 0); moved = true; }
+      if (moved) { this.applyVisual(rows); this.render(); }
+      return;
+    }
 
     // 数字切 tab
     const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
@@ -586,11 +634,19 @@ export class Tui {
       this.sortIdx[this.tab] = ((this.sortIdx[this.tab] ?? 0) + 1) % (this.sortDefs[this.tab]?.length ?? 1);
       this.render(); return;
     }
+    if (name === 'v' && rows.length > 0) {
+      this.visual = true;
+      this.visualAnchor = this.cursor;
+      this.visualTarget = !this.isRowSelected(rows[Math.min(this.cursor, rows.length - 1)]);
+      this.applyVisual(rows);
+      this.render(); return;
+    }
     if (name === 'space' || name === 'return' || name === 'enter') {
       this.activateRow(rows); return;
     }
-    if (name === 'a') { this.selectAllCandidates(); return; }
-    if (name === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.dryPreviewed = false; this.render(); return; }
+    const seq = key.sequence ?? '';
+    if (name === 'a' && !key.shift) { this.selectAllCandidates(); return; }
+    if (seq === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.dryPreviewed = false; this.render(); return; }
     if (name === 'd') { this.startDry(); return; }
     if (name === 'x') { this.startExecute(); return; }
     if (name === 'c' && this.tab === 'cache') { this.startCacheClean(); return; }
@@ -629,8 +685,7 @@ export class Tui {
       }
       this.render(); return;
     }
-    // 勾选/取消
-    if (!row.candidate) { this.setStatus('该项不可勾选（被依赖/运行中/受保护/待复核）'); return; }
+    // 勾选/取消（任何行均可；非候选标记 [!] 警告，执行层复核兜底）
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
     const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD;
@@ -827,6 +882,8 @@ export class Tui {
           : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');
     } else if (this.mode === 'input') {
       help = ' enter 确认 · esc 取消';
+    } else if (this.visual) {
+      help = C.bold + ' 拖选模式: ↑↓/jk/G 拖选 · v/esc 结束' + C.reset + C.gray + ' · a 全选候选 · q 退出';
     } else if (this.tab === 'history') {
       help = ' ↑↓/jk 移动 · enter 重装该条 · r 重扫 · ←→ 切页 · q 退出';
     } else if (this.tab === 'settings') {
@@ -834,7 +891,7 @@ export class Tui {
     } else {
       const { n, k } = this.selTotals();
       const selPart = n > 0 ? C.bold + `已选 ${n} 项 ~${fmtKB(k)}` + (this.dryPreviewed ? C.green + ' ✓已预演' + C.reset : '') + ' · ' : '';
-      help = ' space 勾选 · a 全选候选 · / 搜索 · d 预演 · x 执行 · r 重扫 · ' + selPart + 'q 退出';
+      help = ' space 勾选 · v 批量拖选 · a 全选候选 · / 搜索 · d 预演 · x 执行 · ' + selPart + 'q 退出';
     }
     while (out.length < H - 1) out.push('');
     out.length = Math.min(out.length, H - 1);

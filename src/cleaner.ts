@@ -33,25 +33,18 @@ async function uninstallFormulae(names: string[], dry: boolean, hooks: CleanerHo
   const output: string[] = [];
   let ok = true;
   const toRun: string[] = [];
-  hooks.step(`复核 ${names.length} 个包的安全性（反向依赖 / 运行中进程 / 服务 / 保护名单）…`);
+  hooks.step(`复核 ${names.length} 个包（反向依赖 / 运行中 / 服务 / 保护名单）…`);
   const cfg = loadConfig();
   const [running, services] = await Promise.all([runningFormulae(await getPrefix()), servicesRunning().catch(() => new Set<string>())]);
   const protect = new Set(cfg.protect);
+  const batchSet = new Set(names);
   for (const name of names) {
-    if (protect.has(name)) {
-      skipped.push(name);
-      hooks.log(`跳过 ${name}：在保护名单中`);
-      continue;
-    }
-    if (running.has(name) || services.has(name)) {
-      skipped.push(name);
-      hooks.log(`跳过 ${name}：当前有进程/后台服务正在运行`);
-      continue;
-    }
-    const dependents = await checkUsedBy(name);
+    if (protect.has(name)) hooks.log(`⚠️ ${name} 在保护名单中，按你的显式选择继续`);
+    if (running.has(name) || services.has(name)) hooks.log(`⚠️ ${name} 正在运行，仍将卸载（建议先停服务）`);
+    const dependents = (await checkUsedBy(name)).filter((d) => !batchSet.has(d));
     if (dependents.length > 0) {
       skipped.push(name);
-      hooks.log(`跳过 ${name}：仍被 ${dependents.join(', ')} 依赖`);
+      hooks.log(`跳过 ${name}：仍被 ${dependents.join(', ')} 依赖（把它也勾选进来即可一并删除）`);
     } else {
       toRun.push(name);
     }
