@@ -203,7 +203,12 @@
     </section>
 
     <section id="panel-log" class="panel" hidden>
-      <h4 class="subtable-title">最近清理记录（真实执行过才会写入，持久保存在 ~/.spacefree/history.jsonl）</h4>
+      <div class="toolbar" style="margin-top:0">
+        <h4 class="subtable-title" style="margin:0">最近清理记录（真实执行过才会写入，持久保存于 ~/.spacefree/history.jsonl）</h4>
+        <span class="spacer"></span>
+        <button class="btn small" id="btn-export-brewfile">导出 Brewfile 留底</button>
+        <button class="btn small primary" id="btn-reinstall-all" hidden>一键重装全部已删的包</button>
+      </div>
       <div id="history-box" class="history-box muted">暂无清理记录 — 只有点击"确认执行清理"后的操作才会记录在这里；Dry-run 预演不会。</div>
       <div class="log" id="log"></div>
     </section>

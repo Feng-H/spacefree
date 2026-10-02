@@ -8,6 +8,7 @@ import { loadConfig } from './config.js';
 export type Op =
   | { type: 'uninstall-formula'; names: string[] }
   | { type: 'uninstall-cask'; tokens: string[] }
+  | { type: 'install-formula'; names: string[] }
   | { type: 'autoremove' }
   | { type: 'brew-cache' }
   | { type: 'trash-app'; paths: string[] }
@@ -89,6 +90,21 @@ async function uninstallCasks(tokens: string[], dry: boolean, hooks: CleanerHook
   return { op: { type: 'uninstall-cask', tokens }, ok: r.code === 0, skipped: [], freedK: null, output };
 }
 
+async function installFormulae(names: string[], dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
+  const output: string[] = [];
+  if (dry) {
+    hooks.step(`预演: 将安装 ${names.length} 个包 → ${names.join(' ')}`);
+    return { op: { type: 'install-formula', names }, ok: true, skipped: [], freedK: 0, output };
+  }
+  hooks.step(`安装 ${names.length} 个包（需要时会自动重装依赖）: ${names.join(' ')}`);
+  const r = await exec('brew', ['install', ...names], {
+    timeoutMs: 1800_000,
+    onLine: (line) => { hooks.log(line); output.push(line); },
+  });
+  hooks.log(r.code === 0 ? '安装完成' : `安装失败 (exit ${r.code})`);
+  return { op: { type: 'install-formula', names }, ok: r.code === 0, skipped: [], freedK: 0, output };
+}
+
 async function autoremove(dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
   const output: string[] = [];
   hooks.step(`${dry ? '预演' : '执行'} brew autoremove（清理无主依赖）…`);
@@ -151,6 +167,7 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Prom
     try {
       if (op.type === 'uninstall-formula') results.push(await uninstallFormulae(op.names, dry, hooks));
       else if (op.type === 'uninstall-cask') results.push(await uninstallCasks(op.tokens, dry, hooks));
+      else if (op.type === 'install-formula') results.push(await installFormulae(op.names, dry, hooks));
       else if (op.type === 'autoremove') results.push(await autoremove(dry, hooks));
       else if (op.type === 'brew-cache') results.push(await brewCacheClean(dry, hooks));
       else if (op.type === 'trash-app') results.push(await trash(op.paths, hooks));

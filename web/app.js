@@ -506,6 +506,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('btn-hook-install').addEventListener('click', () => hookAction('install'));
   $('btn-hook-uninstall').addEventListener('click', () => hookAction('uninstall'));
+  $('btn-export-brewfile').addEventListener('click', async () => {
+    const r = await fetch('/api/export-brewfile', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) showModal('Brewfile 已导出', `<p>当前全部已装包已留底到：</p><p><b>${esc(j.file)}</b></p><p class="muted">随时可用 <b>brew bundle --file ${esc(j.file)}</b> 一键恢复整套环境。</p>`, null, '知道了', 'primary');
+    else alert(j.error ?? '导出失败');
+  });
 
   $('modal-cancel').addEventListener('click', hideModal);
   $('modal-ok').addEventListener('click', () => { hideModal(); modalOkFn?.(); });
@@ -530,8 +536,53 @@ async function loadHistory() {
       const skip = h.skipped?.length
         ? ` <span class="h-skip">跳过: ${esc(h.skipped.join('、'))}</span>`
         : '';
-      return `<div><span class="h-time">${time}</span><span class="${h.ok ? 'h-ok' : 'h-fail'}">${h.ok ? '✅' : '⚠️'}</span> ${esc((h.actions ?? []).join('；'))}${skip}</div>`;
+      // 兼容旧记录（无 deleted 字段时从 actions 文本提取）
+      const deleted = h.deleted ?? (h.actions ?? [])
+        .filter((a) => a.startsWith('卸载 brew 包:') || a.startsWith('卸载 cask:'))
+        .flatMap((a) => {
+          const kind = a.startsWith('卸载 brew 包') ? 'formula' : 'cask';
+          return a.split(':')[1].split(',').map((s) => ({ kind, name: s.trim() })).filter((x) => x.name);
+        });
+      const reinstallable = deleted.filter((d) => d.kind === 'formula').map((d) => d.name);
+      const caskList = deleted.filter((d) => d.kind === 'cask').map((d) => d.name);
+      let reinstallBtn = '';
+      if (reinstallable.length > 0) {
+        const names = reinstallable.map((n) => `'${n}'`).join(',');
+        reinstallBtn = ` <button class="btn small" data-reinstall="${esc(names)}">重装</button>`;
+      }
+      const caskNote = caskList.length ? ` <span class="muted">cask 重装命令: brew install --cask ${esc(caskList.join(' '))}</span>` : '';
+      return `<div><span class="h-time">${time}</span><span class="${h.ok ? 'h-ok' : 'h-fail'}">${h.ok ? '✅' : '⚠️'}</span> ${esc((h.actions ?? []).join('；'))}${skip}${reinstallBtn}${caskNote}</div>`;
     }).join('');
+    box.querySelectorAll('button[data-reinstall]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const names = el.dataset.reinstall.split(',').map((s) => s.replace(/^'|'$/g, ''));
+        showModal('重装确认', `<p>即将执行 <b>brew install ${esc(names.join(' '))}</b>（需要时会自动重装依赖），完成后可在日志页查看过程。</p>`, () => {
+          fetch('/api/execute', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ops: [{ type: 'install-formula', names }], dry: false }),
+          }).then((r) => {
+            if (r.status === 202) { switchTab('log'); appendLog(`── 开始重装: ${names.join(' ')} ──`, 'ok'); }
+          });
+        }, '重装', 'primary');
+      });
+    });
+    // 一键重装全部
+    const allNames = list.flatMap((h) => (h.deleted ?? [])).filter((d) => d.kind === 'formula').map((d) => d.name);
+    const btnAll = $('btn-reinstall-all');
+    if (allNames.length > 0) {
+      btnAll.hidden = false;
+      btnAll.textContent = `一键重装全部已删的包 (${allNames.length})`;
+      btnAll.onclick = () => {
+        showModal('一键重装确认', `<p>即将执行 <b>brew install ${esc(allNames.join(' '))}</b></p><p class="muted">只重装你主动删过的 formula；cask 请用记录中给出的命令手动重装。</p>`, () => {
+          fetch('/api/execute', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ops: [{ type: 'install-formula', names: allNames }], dry: false }),
+          }).then((r) => {
+            if (r.status === 202) { switchTab('log'); appendLog(`── 开始一键重装 ${allNames.length} 个包 ──`, 'ok'); }
+          });
+        }, '重装全部', 'primary');
+      };
+    }
   } catch { /* ignore */ }
 }
 
