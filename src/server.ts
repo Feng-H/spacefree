@@ -167,10 +167,25 @@ export function startServer(port?: number): http.Server {
         if (!Array.isArray(ops) || ops.length === 0) { json(400, { error: 'ops 为空' }); return; }
         job.running = true; job.kind = 'clean';
         bus.log(`开始${dry ? '预演' : '执行'}清理（${ops.length} 组操作）`);
+        const st = loadState();
+        let estimatedK = 0;
+        if (st && dry) {
+          for (const op of ops) {
+            if (op.type === 'uninstall-formula') for (const n of op.names) estimatedK += st.formulae.find((f) => f.name === n)?.sizeK ?? 0;
+            else if (op.type === 'uninstall-cask') for (const t of op.tokens) estimatedK += st.casks.find((c) => c.token === t)?.sizeK ?? 0;
+            else if (op.type === 'trash-app') for (const p of op.paths) estimatedK += st.apps.find((a) => a.path === p)?.sizeK ?? 0;
+            else if (op.type === 'trash-file') for (const p of op.paths) {
+              const pr = st.projects.find((x) => p.startsWith(x.path));
+              estimatedK += pr?.depDirs.find((d) => d.path === p)?.sizeK ?? 0;
+            }
+            else if (op.type === 'brew-cache') estimatedK += st.cache.brewCleanupFreedK ?? 0;
+            else if (op.type === 'dev-cache') for (const n of op.names) estimatedK += st.cache.devCaches?.find((d) => d.name === n)?.sizeK ?? 0;
+          }
+        }
         runOps(ops, dry, {
           log: (m) => bus.log(m),
           step: (m) => { bus.progress(m); bus.log(m); },
-        })
+        }, estimatedK)
           .then((results) => {
             const skipped = results.flatMap((r) => r.skipped ?? []);
             if (!dry) {

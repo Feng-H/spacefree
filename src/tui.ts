@@ -442,7 +442,7 @@ export class Tui {
       const results = await runOps(ops, dry, {
         log: (m) => this.log(m),
         step: (m) => this.log(C.cyan + '▶ ' + C.reset + m),
-      });
+      }, dry ? this.selTotals().k : 0);
       const skipped = results.flatMap((r) => r.skipped ?? []);
       const ok = results.every((r) => r.ok);
       if (!dry) {

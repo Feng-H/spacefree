@@ -159,7 +159,7 @@ async function brewCacheClean(dry: boolean, hooks: CleanerHooks): Promise<OpResu
   return { op: { type: 'brew-cache' }, ok: r.code === 0, skipped: [], freedK: null, output };
 }
 
-async function trash(paths: string[], hooks: CleanerHooks): Promise<OpResult> {
+async function trash(paths: string[], dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
   const output: string[] = [];
   const skipped: string[] = [];
   const existing = paths.filter((p) => fs.existsSync(p));
@@ -167,6 +167,20 @@ async function trash(paths: string[], hooks: CleanerHooks): Promise<OpResult> {
   if (existing.length === 0) {
     hooks.log('没有可删除的文件');
     return { op: { type: 'trash-app', paths }, ok: true, skipped, freedK: 0, output };
+  }
+  if (dry) {
+    // Dry-run: 只计算大小输出计划，绝不执行任何删除
+    let estK = 0;
+    const details: string[] = [];
+    for (const p of existing) {
+      const k = await duPathK(p);
+      estK += k;
+      details.push(`${path.basename(p)} (${fmtKB(k)})`);
+    }
+    hooks.step(`预演: 将移入废纸篓 ${existing.length} 项，预计释放 ~${fmtKB(estK)}`);
+    for (const d of details) hooks.log(`  · ${d}`);
+    if (skipped.length > 0) hooks.log(`  （${skipped.length} 项已不存在，将跳过）`);
+    return { op: { type: 'trash-app', paths }, ok: true, skipped, freedK: estK, output };
   }
   hooks.step(`移入废纸篓 ${existing.length} 项…`);
   const list = existing.map((p) => `POSIX file "${p}"`).join(', ');
@@ -193,7 +207,7 @@ async function trash(paths: string[], hooks: CleanerHooks): Promise<OpResult> {
   return { op: { type: 'trash-app', paths }, ok: true, skipped, freedK: null, output };
 }
 
-export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Promise<OpResult[]> {
+export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks, estimatedK = 0): Promise<OpResult[]> {
   const freeBefore = dry ? null : await diskFreeK();
   const results: OpResult[] = [];
   for (const op of ops) {
@@ -204,12 +218,17 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Prom
       else if (op.type === 'autoremove') results.push(await autoremove(dry, hooks));
       else if (op.type === 'brew-cache') results.push(await brewCacheClean(dry, hooks));
       else if (op.type === 'dev-cache') results.push(await cleanDevCaches(op.names, dry, hooks));
-      else if (op.type === 'trash-app') results.push(await trash(op.paths, hooks));
-      else if (op.type === 'trash-file') results.push(await trash(op.paths, hooks));
+      else if (op.type === 'trash-app') results.push(await trash(op.paths, dry, hooks));
+      else if (op.type === 'trash-file') results.push(await trash(op.paths, dry, hooks));
     } catch (err) {
       hooks.log(`操作异常: ${err instanceof Error ? err.message : String(err)}`);
       results.push({ op, ok: false, skipped: [], freedK: null, output: [] });
     }
+  }
+  if (dry) {
+    // Dry-run 汇总（Mole 风格）：只报计划与预计释放量，不执行任何删除
+    const estK = Math.max(estimatedK, results.reduce((a, r) => a + (r.freedK ?? 0), 0));
+    hooks.step(`── 预演汇总: ${results.length} 组操作${estK > 0 ? `，预计释放 ~${fmtKB(estK)}` : ''}（未执行任何删除）──`);
   }
   if (!dry && freeBefore != null) {
     const freeAfter = await diskFreeK();
@@ -219,6 +238,13 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks): Prom
     }
   }
   return results;
+}
+
+/** 单路径 du 大小（KB），不存在返回 0 */
+async function duPathK(p: string): Promise<number> {
+  const r = await exec('du', ['-sk', p], { timeoutMs: 60_000 });
+  const m = r.stdout.trim().match(/^(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
 }
 
 async function diskFreeK(): Promise<number | null> {
