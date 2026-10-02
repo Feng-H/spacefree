@@ -299,7 +299,7 @@ export class Tui {
           candidate: cand,
           cells: [
             this.selMark(this.selP.has(pr.path), cand) + ' ',
-            padTrunc(pr.name, 26),
+            padTrunc(pr.name + (pr.via === 'agent' ? C.gray + ' ⌘agent' + C.reset : ''), 26),
             pad(fmtKB(pr.depSizeK), 10),
             padTrunc(pr.depNames.join('+'), 14),
             pad(pr.srcMtime ? fmtDays(pr.srcMtime) : '未知', 9),

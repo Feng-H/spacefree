@@ -13,6 +13,7 @@ export interface DepDir {
 export interface ProjectEntry {
   name: string;
   path: string;
+  via: 'roots' | 'agent';   // 来源: 配置根目录 | AGENTS.md/CLAUDE.md 标记发现
   depDirs: DepDir[];
   depSizeK: number;
   srcMtime: number | null;    // 最新源码修改时间（排除依赖目录与 .git）
@@ -32,20 +33,58 @@ function isProject(dir: string): boolean {
   return false;
 }
 
+function walkProjects(dir: string, depth: number, out: string[]): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
+    const full = path.join(dir, e.name);
+    if (isProject(full)) out.push(full);
+    if (depth > 0) walkProjects(full, depth - 1, out);
+  }
+}
+
 /** 深度 2 的项目发现（跳过 node_modules/.git/隐藏目录） */
 function findProjects(root: string): string[] {
   const out: string[] = [];
-  const walk = (dir: string, depth: number) => {
-    let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
-      const full = path.join(dir, e.name);
-      if (isProject(full)) out.push(full);
-      if (depth > 0) walk(full, depth - 1);
+  walkProjects(root, 1, out);
+  return out;
+}
+
+/**
+ * AI agent 工作区发现：AGENTS.md / CLAUDE.md 是 harness 生成项目的标志文件。
+ * 用 Spotlight(mdfind) 全盘秒查，取其所在目录（或子目录深度 2）内的依赖项目。
+ * 排除 node_modules/Library/Trash 内的假命中与模糊匹配。
+ */
+async function findAgentProjects(log: (m: string) => void): Promise<string[]> {
+  const home = process.env.HOME ?? '';
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let markers = 0;
+  for (const marker of ['AGENTS.md', 'CLAUDE.md']) {
+    const r = await exec('mdfind', ['-name', marker], { timeoutMs: 30_000 });
+    if (r.code !== 0) {
+      log(`Spotlight(mdfind) 不可用，跳过 agent 标记发现（${marker}）`);
+      continue;
     }
-  };
-  walk(root, 1);
+    for (const line of r.stdout.split('\n').filter(Boolean)) {
+      if (!line.startsWith(home + '/')) continue;
+      if (line.includes('/Library/') || line.includes('/node_modules/') || line.includes('/.Trash/')) continue;
+      if (path.basename(line) !== marker) continue; // mdfind 会模糊匹配（如 machine_agent.md）
+      markers += 1;
+      const dir = path.dirname(line);
+      if (isProject(dir)) {
+        if (!seen.has(dir)) { seen.add(dir); out.push(dir); }
+      } else {
+        const sub: string[] = [];
+        walkProjects(dir, 2, sub); // 标记在上层（如 ~/pidev），扫子目录
+        for (const p of sub) {
+          if (!seen.has(p)) { seen.add(p); out.push(p); }
+        }
+      }
+    }
+  }
+  log(`Agent 工作区标记 (AGENTS.md/CLAUDE.md): ${markers} 处 → ${out.length} 个含依赖目录的项目`);
   return out;
 }
 
@@ -98,12 +137,17 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
   const roots = cfg.projectRoots.map(expandHome).filter((r) => fs.existsSync(r) && fs.statSync(r).isDirectory());
   const seen = new Set<string>();
   const projects: string[] = [];
+  const viaMap = new Map<string, 'roots' | 'agent'>();
   for (const root of roots) {
     for (const p of findProjects(root)) {
-      if (!seen.has(p)) { seen.add(p); projects.push(p); }
+      if (!seen.has(p)) { seen.add(p); projects.push(p); viaMap.set(p, 'roots'); }
     }
   }
   log(`项目根目录: ${roots.map((r) => path.basename(r)).join(', ') || '无'}；发现 ${projects.length} 个含依赖目录的项目`);
+  onProgress?.('扫描 AI agent 工作区（AGENTS.md/CLAUDE.md）…');
+  for (const p of await findAgentProjects(log)) {
+    if (!seen.has(p)) { seen.add(p); projects.push(p); viaMap.set(p, 'agent'); }
+  }
   const cwdUsage = readCwdUsage();
 
   const entries = await pmap(projects, 3, async (proj): Promise<ProjectEntry | null> => {
@@ -122,6 +166,7 @@ export async function scanProjects(cfg: Config, log: (m: string) => void, onProg
     return {
       name: path.basename(proj),
       path: proj,
+      via: viaMap.get(proj) ?? 'roots',
       depDirs,
       depSizeK: depDirs.reduce((a, b) => a + b.sizeK, 0),
       srcMtime: mtime,

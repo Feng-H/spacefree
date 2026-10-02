@@ -52,6 +52,7 @@ export interface AppPlan {
 export interface ProjectPlan {
   name: string;
   path: string;
+  via: 'roots' | 'agent';
   depSizeK: number;
   depPaths: string[];
   depNames: string[];
@@ -272,6 +273,7 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     return {
       name: p.name,
       path: p.path,
+      via: p.via ?? 'roots',
       depSizeK: p.depSizeK,
       depPaths: p.depDirs.map((d) => d.path),
       depNames: p.depDirs.map((d) => d.name),
