@@ -480,11 +480,20 @@ export class Tui {
       else if (key.name === 'down' || key.name === 'j') { this.scrollLog(1); }
       else if (key.name === 'g') { this.logFollow = false; this.render(); }
       else if (key.name === 'q' || key.name === 'escape' || key.name === 'x' || key.name === 'r') {
-        this.setStatus('任务执行中，完成后按 q/esc 返回列表（Ctrl+C 强制中断）');
+        this.setStatus(`⏳ ${this.busyMsg} — 操作键已锁定，完成后自动解锁（q/Ctrl+C 退出）`);
       }
       return;
     }
-    if (this.busy) return;
+    if (this.busy) {
+      // 任务进行中：仅放行纯视图操作（切页/移动/排序/退出），操作键锁定防重复触发
+      const seq = key.sequence ?? '';
+      const nav = ['up', 'down', 'k', 'j', 'left', 'right', 'q'].includes(key.name) || seq === 'G';
+      const isNum = ['1', '2', '3', '4', '5', '6', '7'].includes(seq);
+      const isSort = key.name === 's' && seq === 's';
+      if (nav || isNum || isSort) { this.handleTableKey(key); return; }
+      this.setStatus(`⏳ ${this.busyMsg} — 操作键已锁定，完成后自动解锁（q/Ctrl+C 退出）`);
+      return;
+    }
 
     if (this.mode === 'input') { this.handleInputKey(key); return; }
     if (this.mode === 'log') { this.handleLogKey(key); return; }
@@ -627,8 +636,8 @@ export class Tui {
     if (name === 'r' && this.tab !== 'settings') { void this.doScan(); return; }
     if (name === 'up' || name === 'k') { this.cursor = Math.max(0, this.cursor - 1); this.render(); return; }
     if (name === 'down' || name === 'j') { this.cursor = Math.min(Math.max(rows.length - 1, 0), this.cursor + 1); this.render(); return; }
-    if (name === 'g') { this.cursor = 0; this.render(); return; }
-    if (name === 'G') { this.cursor = Math.max(rows.length - 1, 0); this.render(); return; }
+    if (name === 'g' && !key.shift) { this.cursor = 0; this.render(); return; }
+    if (name === 'g' && (key.shift || (key.sequence ?? '') === 'G')) { this.cursor = Math.max(rows.length - 1, 0); this.render(); return; }
     if (name === '/') {
       this.mode = 'input';
       this.input = { prompt: '搜索:', value: this.filter, purpose: 'search' };
