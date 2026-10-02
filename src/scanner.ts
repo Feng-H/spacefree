@@ -27,9 +27,10 @@ export interface DownloadEntry {
 
 export interface DevCacheEntry {
   name: string;         // npm / pip / uv / ...
+  path: string;         // 磁盘路径（供可勾选删除）
   sizeK: number;
   cleanCmd?: string;    // 官方安全清理命令（可一键执行）
-  safe: boolean;        // true=官方命令可清；false=仅展示（用户自行决定）
+  safe: boolean;        // true=官方命令可清；false=可勾选删除（附警告）
   note?: string;
 }
 
@@ -37,8 +38,10 @@ export interface CacheInfo {
   brewCacheK: number;
   brewCleanupFreedK: number | null;  // what `brew cleanup --prune=all` would free
   devCaches: DevCacheEntry[];
-  libraryCachesK: number;   // ~/Library/Caches 总量（仅展示）
-  derivedDataK: number;     // Xcode DerivedData（仅展示）
+  libraryCachesK: number;   // ~/Library/Caches 总量
+  libraryCachesPath: string;
+  derivedDataK: number;     // Xcode DerivedData
+  derivedDataPath: string;
 }
 
 export interface ScanState {
@@ -166,7 +169,7 @@ function scanDevCaches(log: (m: string) => void): { devCaches: DevCacheEntry[]; 
   const devCaches: DevCacheEntry[] = [];
   for (const d of defs) {
     const sizeK = duOne(d.path);
-    if (sizeK > 0) devCaches.push({ name: d.name, sizeK, cleanCmd: d.cleanCmd, safe: d.safe, note: d.note });
+    if (sizeK > 0) devCaches.push({ name: d.name, path: d.path, sizeK, cleanCmd: d.cleanCmd, safe: d.safe, note: d.note });
   }
   const libraryCachesK = duOne(path.join(home, 'Library/Caches'));
   const derivedDataK = duOne(path.join(home, 'Library/Developer/Xcode/DerivedData'));
@@ -184,7 +187,14 @@ async function scanCache(log: (m: string) => void): Promise<CacheInfo> {
   if (m) freedK = parseSizeToKB(m[1]);
   log(`brew 缓存: ${fmtKB(brewCacheK)}；brew cleanup 可释放 ${freedK ? fmtKB(freedK) : '未知'}`);
   const extra = scanDevCaches(log);
-  return { brewCacheK, brewCleanupFreedK: freedK, ...extra };
+  const home = process.env.HOME ?? '';
+  return {
+    brewCacheK,
+    brewCleanupFreedK: freedK,
+    ...extra,
+    libraryCachesPath: path.join(home, 'Library/Caches'),
+    derivedDataPath: path.join(home, 'Library/Developer/Xcode/DerivedData'),
+  };
 }
 
 function linkCasksToApps(casks: CaskInfo[], apps: AppEntry[]): void {

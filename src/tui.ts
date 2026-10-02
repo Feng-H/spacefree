@@ -106,6 +106,7 @@ export class Tui {
   private selA = new Set<string>();   // app path
   private selD = new Set<string>();   // download file
   private selP = new Set<string>();   // project path
+  private selX = new Set<string>();   // cache 大目录 path
 
   private filter = '';
   private mode: 'table' | 'log' | 'input' | 'help' = 'help';
@@ -314,6 +315,41 @@ export class Tui {
       this.sortRows(rows, [{ key: 'sizeK', label: '大小' }, { key: 'name', label: '名称' }, { key: 'lastUsed', label: '最近活动' }]);
       return rows;
     }
+    if (this.tab === 'cache') {
+      const cache = this.state?.cache;
+      // 官方命令类（c/n 快捷键处理，行内展示）
+      for (const d of (cache?.devCaches ?? []).filter((x) => x.safe)) {
+        rows.push({
+          key: `ncmd:${d.name}`,
+          candidate: false,
+          cells: [C.dim + ' ─ ' + C.reset + ' ', padTrunc(d.name, 22), pad(fmtKB(d.sizeK), 10), C.gray + padTrunc(d.cleanCmd ?? '', 30) + C.reset, C.gray + '[n 全部清理]' + C.reset],
+          plain: `${d.name} ${d.cleanCmd ?? ''}`,
+          sortVals: {},
+        });
+      }
+      // 可勾选大目录类（space 勾选 → d/x/yes 统一流程，移入废纸篓可恢复）
+      const bigDirs: { name: string; path: string; sizeK: number; note: string }[] = [
+        ...(cache?.devCaches ?? []).filter((x) => !x.safe).map((x) => ({ name: x.name, path: x.path, sizeK: x.sizeK, note: x.note ?? '删除=移入废纸篓，可恢复' })),
+      ];
+      if (cache && cache.libraryCachesK > 0) bigDirs.push({ name: '~/Library/Caches', path: cache.libraryCachesPath, sizeK: cache.libraryCachesK, note: '⚠️ 全部应用缓存，删后各应用首次启动变慢' });
+      if (cache && cache.derivedDataK > 0) bigDirs.push({ name: 'Xcode DerivedData', path: cache.derivedDataPath, sizeK: cache.derivedDataK, note: 'Xcode 构建产物，删后下次构建全量重编' });
+      for (const d of bigDirs) {
+        rows.push({
+          key: `x:${d.path}`,
+          candidate: true,
+          cells: [
+            this.selMark(this.selX.has(d.path), true) + ' ',
+            padTrunc(C.white + d.name + C.reset, 24),
+            pad(fmtKB(d.sizeK), 10),
+            C.gray + trunc(d.note, 58) + C.reset,
+          ],
+          plain: `${d.name} ${d.note}`,
+          sortVals: { sizeK: d.sizeK, name: d.name },
+        });
+      }
+      this.sortRows(rows, [{ key: 'sizeK', label: '大小' }]);
+      return rows;
+    }
     if (this.tab === 'history') {
       this.history.forEach((h, i) => {
         const t = new Date(h.time * 1000);
@@ -396,6 +432,7 @@ export class Tui {
       const paths = this.p.projects.filter((x) => this.selP.has(x.path)).flatMap((x) => x.depPaths);
       if (paths.length > 0) ops.push({ type: 'trash-file', paths });
     }
+    if (this.selX.size > 0) ops.push({ type: 'trash-file', paths: [...this.selX] });
     return ops;
   }
 
@@ -407,6 +444,13 @@ export class Tui {
     for (const p of this.selA) { const a = this.p.apps.find((x) => x.path === p); if (a) { k += a.sizeK; n++; } }
     for (const f of this.selD) { const d = this.state.downloads.find((x) => x.file === f); if (d) { k += d.sizeK; n++; } }
     for (const pp of this.selP) { const pr = this.p?.projects.find((x) => x.path === pp); if (pr) { k += pr.depSizeK; n++; } }
+    for (const xp of this.selX) {
+      const cache = this.state?.cache;
+      const dev = (cache?.devCaches ?? []).find((d) => d.path === xp);
+      if (dev) { k += dev.sizeK; n++; }
+      else if (xp === cache?.libraryCachesPath) { k += cache.libraryCachesK ?? 0; n++; }
+      else if (xp === cache?.derivedDataPath) { k += cache.derivedDataK ?? 0; n++; }
+    }
     return { n, k };
   }
 
@@ -419,7 +463,7 @@ export class Tui {
       this.state = state;
       this.p = plan(state, this.cfg);
       this.history = readHistory();
-      this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear();
+      this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
       this.dryPreviewed = false;
       this.mode = 'table';
       this.setStatus(`扫描完成: ${state.formulae.length} 包 / ${state.apps.length} 应用`);
@@ -452,7 +496,7 @@ export class Tui {
         if (skipped.length > 0) this.log(C.yellow + `跳过: ${skipped.join('、')}` + C.reset);
         this.lastExecSummary = `${ok ? '✅' : '⚠️'} ${dry ? '预演' : '执行'}完成` + (skipped.length ? `，跳过 ${skipped.length} 项` : '');
         this.log(C.bold + '按 q/esc 返回列表 · 建议 r 重新扫描刷新数据' + C.reset);
-        this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear();
+        this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
         this.dryPreviewed = false;
       } else {
         this.dryPreviewed = true;
@@ -589,13 +633,13 @@ export class Tui {
   private isRowSelected(row: Row): boolean {
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    return (kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD).has(val);
+    return (kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD).has(val);
   }
 
   private setRowSel(row: Row, sel: boolean): void {
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD;
+    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
     if (sel) set.add(val); else set.delete(val);
   }
 
@@ -671,7 +715,7 @@ export class Tui {
     }
     const seq = key.sequence ?? '';
     if (name === 'a' && !key.shift) { this.selectAllCandidates(); return; }
-    if (seq === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.dryPreviewed = false; this.render(); return; }
+    if (seq === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear(); this.dryPreviewed = false; this.render(); return; }
     if (name === 'd') { this.startDry(); return; }
     if (name === 'x') { this.startExecute(); return; }
     if (name === 'c' && this.tab === 'cache') { this.startCacheClean(); return; }
@@ -713,7 +757,7 @@ export class Tui {
     // 勾选/取消（任何行均可；非候选标记 [!] 警告，执行层复核兜底）
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : this.selD;
+    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
     if (set.has(val)) set.delete(val); else set.add(val);
     this.dryPreviewed = false;
     this.render();
@@ -878,27 +922,8 @@ export class Tui {
 
     if (this.tab === 'cache' && this.mode === 'table') {
       const cache = this.state?.cache;
-      out.push('');
-      out.push(`  ${C.bold}brew 缓存${C.reset}` + ' '.repeat(8) + `${fmtKB(cache?.brewCacheK ?? 0)} · cleanup 可释放 ${C.green}${fmtKB(cache?.brewCleanupFreedK ?? 0)}${C.reset}  ${C.gray}[c 清理]${C.reset}`);
-      out.push('');
-      out.push(`  ${C.bold}开发工具缓存${C.reset}（官方命令安全清理）  ${C.gray}[n 全部清理]${C.reset}`);
-      const devs = (cache?.devCaches ?? []).filter((d) => d.safe);
-      if (devs.length === 0) out.push(C.gray + '    （未发现）' + C.reset);
-      for (const d of devs) {
-        out.push(`    ${padTrunc(d.name, 18)}${pad(fmtKB(d.sizeK), 10)}${C.gray}${trunc(d.cleanCmd ?? '', 28)}${C.reset}`);
-      }
-      out.push('');
-      out.push(`  ${C.bold}展示型大目录${C.reset}（仅报大小，是否删由你决定）`);
-      const ro = (cache?.devCaches ?? []).filter((d) => !d.safe);
-      for (const d of ro) {
-        out.push(`    ${padTrunc(d.name, 18)}${pad(fmtKB(d.sizeK), 10)}${C.gray}${trunc(d.note ?? '', 44)}${C.reset}`);
-      }
-      out.push(`    ${padTrunc('~/Library/Caches', 18)}${pad(fmtKB(cache?.libraryCachesK ?? 0), 10)}${C.gray}含全部应用缓存，建议用 Mole 或手动处理${C.reset}`);
-      out.push(`    ${padTrunc('Xcode DerivedData', 18)}${pad(fmtKB(cache?.derivedDataK ?? 0), 10)}${C.gray}Xcode 构建产物${C.reset}`);
-      out.push('');
-      out.push(C.gray + '  提示: brew/开发缓存清理不进入清理历史（可随时重建）' + C.reset);
-      this.finish(out, W, H);
-      return;
+      out.push(`  ${C.bold}brew 缓存${C.reset}  ${fmtKB(cache?.brewCacheK ?? 0)} · cleanup 可释放 ${C.green}${fmtKB(cache?.brewCleanupFreedK ?? 0)}${C.reset}  ${C.gray}[c 清理]${C.reset}   ${C.bold}官方命令类${C.reset} ${C.gray}[n 全部清理]；下方大目录 ${C.bold}space 可勾选${C.reset} → d 预演 → x 执行（移入废纸篓可恢复）`);
+      out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
     }
 
     if (this.mode === 'log') {
@@ -931,7 +956,7 @@ export class Tui {
       out.push(cursorMark + line + (plainLen < W - 2 ? '' : ''));
     });
     if (rows.length > 0) {
-      out.push(C.gray + ` ${Math.min(this.offset + 1, rows.length)}-${Math.min(this.offset + bodyH, rows.length)}/${rows.length} 行` + (this.sortDefs[this.tab]?.length ? ` · 排序: ${this.sortDefs[this.tab][this.sortIdx[this.tab] % this.sortDefs[this.tab].length].label} (s 切换)` : '') + C.reset);
+      out.push(C.gray + ` ${Math.min(this.offset + 1, rows.length)}-${Math.min(this.offset + bodyH, rows.length)}/${rows.length} 行` + (this.sortDefs[this.tab]?.length ? ` · 排序: ${this.sortDefs[this.tab][(this.sortIdx[this.tab] ?? 0) % this.sortDefs[this.tab].length].label} (s 切换)` : '') + C.reset);
     }
     this.finish(out, W, H);
   }
