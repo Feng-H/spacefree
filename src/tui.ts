@@ -437,6 +437,7 @@ export class Tui {
         this.log(`── 执行完成（${ok ? '全部成功' : '部分失败'}）· 已写入清理历史 ──`);
         if (skipped.length > 0) this.log(C.yellow + `跳过: ${skipped.join('、')}` + C.reset);
         this.lastExecSummary = `${ok ? '✅' : '⚠️'} ${dry ? '预演' : '执行'}完成` + (skipped.length ? `，跳过 ${skipped.length} 项` : '');
+        this.log(C.bold + '按 q/esc 返回列表 · 建议 r 重新扫描刷新数据' + C.reset);
         this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear();
         this.dryPreviewed = false;
       } else {
@@ -465,6 +466,9 @@ export class Tui {
       if (key.name === 'up' || key.name === 'k') { this.logFollow = false; this.scrollLog(-1); }
       else if (key.name === 'down' || key.name === 'j') { this.scrollLog(1); }
       else if (key.name === 'g') { this.logFollow = false; this.render(); }
+      else if (key.name === 'q' || key.name === 'escape' || key.name === 'x' || key.name === 'r') {
+        this.setStatus('任务执行中，完成后按 q/esc 返回列表（Ctrl+C 强制中断）');
+      }
       return;
     }
     if (this.busy) return;
@@ -818,7 +822,9 @@ export class Tui {
     if (this.mode === 'log') {
       help = this.busy
         ? ' ↑↓/jk 滚动日志 · Ctrl+C 中断'
-        : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');
+        : this.lastExecSummary
+          ? C.bold + C.green + ' q/esc 返回列表 · r 重新扫描刷新数据（推荐）' + C.reset + C.gray + ' · ↑↓/jk/G 滚动'
+          : (this.dryPreviewed ? C.bold + ' x 输入 yes 执行真实清理' + C.reset + C.gray + ' · q/esc 返回 · r 重扫 · ↑↓/jk/G 滚动' : ' q/esc 返回列表 · r 重新扫描 · ↑↓/jk/G 滚动');
     } else if (this.mode === 'input') {
       help = ' enter 确认 · esc 取消';
     } else if (this.tab === 'history') {

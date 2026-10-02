@@ -22,7 +22,7 @@ Apple Silicon /opt/homebrew，brew 7.0.7，157 formula+12 cask；ollama/postgres
 ## 已知待改
 - [ ] Web UI 未加"项目依赖"页签（TUI 已完整；web/projects 数据在 /api/state 里现成）
 - [ ] TUI 首帧会有一次短暂闪烁（全清屏重画）；无颜色主题开关
-- [ ] 历史排查经验全部沉淀在 git log 与本文件；新增坑：TS 模板字面量 shell `${}` 转义、python heredoc 改文件时 assert 失败会丢全部修改（先验证再写）、sortIdx 缺 tab 初始值会 NaN 崩溃
+- [ ] 历史排查经验全部沉淀在 git log 与本文件；新增坑：TS 模板字面量 shell `${}` 转义、python heredoc 改文件时 assert 失败会丢全部修改（先验证再写）、sortIdx 缺 tab 初始值会 NaN 崩溃、TUI pty 测试时序（按键需留足间隔，键序错乱会误触发别的快捷键——但意外验证了 a→d→x→no 取消全链路）
 
 ## 待办 / 下一步
 - [ ] 用户 TUI 实际走查（node dist/cli.js）
