@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { exec, expandHome, pmap, STATE_PATH, fmtKB } from './util.js';
 import { loadBrewData, runningFormulae, servicesRunning, parseSizeToKB, type BrewData, type FormulaInfo, type CaskInfo } from './brew.js';
 import { collectUsage, spotlightUsage, type UsageData } from './usage.js';
@@ -16,6 +16,24 @@ export interface AppEntry {
   useCount: number | null;      // spotlight
   system: boolean;              // under /System
   caskToken: string | null;     // linked brew cask if any
+}
+
+export interface AppDataPath {
+  path: string;
+  sizeK: number;
+}
+
+export interface AppDataEntry {
+  name: string;
+  appPath: string;
+  bundleId: string | null;
+  appSizeK: number;
+  dataSizeK: number;
+  paths: AppDataPath[];
+  lastUsed: number | null;
+  useCount: number | null;
+  system: boolean;
+  running: boolean;
 }
 
 export interface DownloadEntry {
@@ -52,6 +70,7 @@ export interface ScanState {
   apps: AppEntry[];
   downloads: DownloadEntry[];
   projects: ProjectEntry[];
+  appData: AppDataEntry[];
   cache: CacheInfo;
   running: string[];
   services: string[];
@@ -211,6 +230,176 @@ function linkCasksToApps(casks: CaskInfo[], apps: AppEntry[]): void {
   }
 }
 
+function extractBundleId(appPath: string): string | null {
+  const p = path.join(appPath, 'Contents', 'Info.plist');
+  if (!fs.existsSync(p)) return null;
+  try {
+    const content = fs.readFileSync(p, 'utf8');
+    const m = content.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/);
+    if (m) return m[1].trim();
+  } catch { /* ignore */ }
+  try {
+    const out = spawnSync('plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', p], { timeout: 3000 }).stdout.toString().trim();
+    if (out) return out;
+  } catch { /* ignore */ }
+  return null;
+}
+
+function getRunningAppPaths(): Set<string> {
+  const running = new Set<string>();
+  try {
+    const out = execFileSync('ps', ['-ax', '-o', 'comm='], { timeout: 10_000 }).toString();
+    for (const line of out.split('\n')) {
+      const m = line.match(/(.*\.app)\//);
+      if (m) running.add(m[1]);
+    }
+  } catch { /* ignore */ }
+  return running;
+}
+
+async function scanAppData(apps: AppEntry[], log: (m: string) => void, onProgress?: (m: string) => void): Promise<AppDataEntry[]> {
+  onProgress?.('扫描应用用户数据与缓存…');
+  const home = process.env.HOME ?? '';
+  const libDirs = {
+    containers: path.join(home, 'Library/Containers'),
+    appSupport: path.join(home, 'Library/Application Support'),
+    caches: path.join(home, 'Library/Caches'),
+    groupContainers: path.join(home, 'Library/Group Containers'),
+    savedState: path.join(home, 'Library/Saved Application State'),
+    webkit: path.join(home, 'Library/WebKit'),
+    httpStorages: path.join(home, 'Library/HTTPStorages'),
+    preferences: path.join(home, 'Library/Preferences'),
+    logs: path.join(home, 'Library/Logs'),
+  };
+
+  const readDirSafe = (p: string): string[] => {
+    try { return fs.readdirSync(p); } catch { return []; }
+  };
+
+  const entries: Record<string, string[]> = {};
+  for (const [k, p] of Object.entries(libDirs)) {
+    entries[k] = readDirSafe(p);
+  }
+
+  // 识别 Application Support 下的一级厂商目录（例如 Google）
+  const appSupportVendors: Record<string, string[]> = {};
+  for (const e of entries.appSupport) {
+    const sub = path.join(libDirs.appSupport, e);
+    try {
+      const st = fs.statSync(sub);
+      if (st.isDirectory()) appSupportVendors[e] = readDirSafe(sub);
+    } catch { /* ignore */ }
+  }
+
+  const runningApps = getRunningAppPaths();
+  const rawList: { app: AppEntry; bundleId: string | null; running: boolean; paths: string[] }[] = [];
+
+  for (const app of apps) {
+    if (app.system) continue;
+    const bid = extractBundleId(app.path);
+    // 过滤系统组件（排除 Xcode 之外的 com.apple.）
+    if (bid && bid.startsWith('com.apple.') && !['com.apple.dt.Xcode'].includes(bid)) continue;
+
+    const name = app.name;
+    const matched = new Set<string>();
+
+    if (bid) {
+      for (const e of entries.containers) {
+        if (e === bid || e.startsWith(bid + '.')) matched.add(path.join(libDirs.containers, e));
+      }
+      for (const e of entries.groupContainers) {
+        if (e.includes(bid)) matched.add(path.join(libDirs.groupContainers, e));
+      }
+      if (entries.savedState.includes(`${bid}.savedState`)) matched.add(path.join(libDirs.savedState, `${bid}.savedState`));
+      if (entries.webkit.includes(bid)) matched.add(path.join(libDirs.webkit, bid));
+      for (const e of entries.httpStorages) {
+        if (e === bid || e.startsWith(bid + '.')) matched.add(path.join(libDirs.httpStorages, e));
+      }
+      if (entries.preferences.includes(`${bid}.plist`)) matched.add(path.join(libDirs.preferences, `${bid}.plist`));
+    }
+
+    // Application Support / Caches / Logs
+    for (const e of entries.appSupport) {
+      if ((bid && e === bid) || e.toLowerCase() === name.toLowerCase()) {
+        matched.add(path.join(libDirs.appSupport, e));
+      } else if (name.toLowerCase() === 'lark' && e.toLowerCase().includes('larkshell')) {
+        matched.add(path.join(libDirs.appSupport, e));
+      }
+    }
+    for (const [vendor, subList] of Object.entries(appSupportVendors)) {
+      for (const sub of subList) {
+        if (sub.toLowerCase() === name.toLowerCase() || (bid && sub === bid)) {
+          matched.add(path.join(libDirs.appSupport, vendor, sub));
+        }
+      }
+    }
+
+    for (const e of entries.caches) {
+      if ((bid && (e === bid || e.startsWith(bid + '.'))) || e.toLowerCase() === name.toLowerCase()) {
+        matched.add(path.join(libDirs.caches, e));
+      } else if (name.toLowerCase() === 'lark' && e.toLowerCase().includes('larkshell')) {
+        matched.add(path.join(libDirs.caches, e));
+      }
+    }
+
+    for (const e of entries.logs) {
+      if ((bid && e === bid) || e.toLowerCase() === name.toLowerCase()) {
+        matched.add(path.join(libDirs.logs, e));
+      }
+    }
+
+    if (matched.size > 0) {
+      rawList.push({
+        app,
+        bundleId: bid,
+        running: runningApps.has(app.path),
+        paths: [...matched],
+      });
+    }
+  }
+
+  // 批量计算各路径大小
+  const allPaths: string[] = [];
+  for (const item of rawList) allPaths.push(...item.paths);
+
+  const pathSizes = new Map<string, number>();
+  const chunkSize = 50;
+  for (let i = 0; i < allPaths.length; i += chunkSize) {
+    const chunk = allPaths.slice(i, i + chunkSize);
+    const r = spawnSync('du', ['-sk', ...chunk]);
+    for (const line of r.stdout.toString().split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (m) pathSizes.set(m[2].replace(/\/$/, ''), parseInt(m[1], 10));
+    }
+  }
+
+  const out: AppDataEntry[] = [];
+  for (const item of rawList) {
+    const pathObjs: AppDataPath[] = item.paths.map((p) => ({
+      path: p,
+      sizeK: pathSizes.get(p) ?? 0,
+    }));
+    const dataSizeK = pathObjs.reduce((acc, p) => acc + p.sizeK, 0);
+    out.push({
+      name: item.app.name,
+      appPath: item.app.path,
+      bundleId: item.bundleId,
+      appSizeK: item.app.sizeK,
+      dataSizeK,
+      paths: pathObjs.sort((a, b) => b.sizeK - a.sizeK),
+      lastUsed: item.app.lastUsed,
+      useCount: item.app.useCount,
+      system: item.app.system,
+      running: item.running,
+    });
+  }
+
+  out.sort((a, b) => b.dataSizeK - a.dataSizeK);
+  const totalK = out.reduce((acc, a) => acc + a.dataSizeK, 0);
+  log(`应用用户数据: ${out.length} 个应用关联共 ${fmtKB(totalK)}`);
+  return out;
+}
+
 export async function runScan(cfg: Config, log: (m: string) => void, onProgress?: (msg: string) => void): Promise<ScanState> {
   onProgress?.('读取 Homebrew 数据…');
   const brew: BrewData = await loadBrewData(log, onProgress);
@@ -223,6 +412,7 @@ export async function runScan(cfg: Config, log: (m: string) => void, onProgress?
   const apps = await scanApps(cfg, log, onProgress);
   const downloads = await scanDownloads(cfg, log);
   const projects = await scanProjects(cfg, log, onProgress);
+  const appData = await scanAppData(apps, log, onProgress);
   onProgress?.('计算缓存占用…');
   const cache = await scanCache(log);
   linkCasksToApps(brew.casks, apps);
@@ -235,6 +425,7 @@ export async function runScan(cfg: Config, log: (m: string) => void, onProgress?
     apps,
     downloads,
     projects,
+    appData,
     cache,
     running: [...running],
     services: [...services],

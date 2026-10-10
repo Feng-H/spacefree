@@ -174,6 +174,7 @@ export function startServer(port?: number): http.Server {
             if (op.type === 'uninstall-formula') for (const n of op.names) estimatedK += st.formulae.find((f) => f.name === n)?.sizeK ?? 0;
             else if (op.type === 'uninstall-cask') for (const t of op.tokens) estimatedK += st.casks.find((c) => c.token === t)?.sizeK ?? 0;
             else if (op.type === 'trash-app') for (const p of op.paths) estimatedK += st.apps.find((a) => a.path === p)?.sizeK ?? 0;
+            else if (op.type === 'trash-app-data') for (const n of op.names) estimatedK += st.appData?.find((a) => a.name === n)?.dataSizeK ?? 0;
             else if (op.type === 'trash-file') for (const p of op.paths) {
               const pr = st.projects.find((x) => p.startsWith(x.path));
               estimatedK += pr?.depDirs.find((d) => d.path === p)?.sizeK ?? 0;

@@ -77,7 +77,7 @@ interface Row {
   sortVals: Record<string, string | number | null>;
 }
 
-type TabId = 'brew' | 'apps' | 'downloads' | 'projects' | 'cache' | 'history' | 'settings';
+type TabId = 'brew' | 'apps' | 'appdata' | 'downloads' | 'projects' | 'cache' | 'history' | 'settings';
 
 interface InputState { prompt: string; value: string; purpose: 'yes' | 'search' | 'number' | 'text' | 'protect' }
 
@@ -91,6 +91,7 @@ export class Tui {
   private tabs: { id: TabId; label: string }[] = [
     { id: 'brew', label: 'Homebrew' },
     { id: 'apps', label: '应用' },
+    { id: 'appdata', label: '应用数据' },
     { id: 'downloads', label: '下载' },
     { id: 'projects', label: '项目依赖' },
     { id: 'cache', label: '缓存' },
@@ -99,11 +100,12 @@ export class Tui {
   ];
   private cursor = 0;
   private offset = 0;
-  private sortIdx: Record<string, number> = { brew: 0, apps: 0, downloads: 0, projects: 0 };
+  private sortIdx: Record<string, number> = { brew: 0, apps: 0, appdata: 0, downloads: 0, projects: 0, cache: 0 };
 
   private selF = new Set<string>();   // formula
   private selC = new Set<string>();   // cask
   private selA = new Set<string>();   // app path
+  private selU = new Set<string>();   // app data (by app name)
   private selD = new Set<string>();   // download file
   private selP = new Set<string>();   // project path
   private selX = new Set<string>();   // cache 大目录 path
@@ -252,23 +254,61 @@ export class Tui {
       for (const a of this.p.apps) {
         if (!this.match(a.name)) continue;
         const cand = a.verdict === 'stale' && !a.system && !a.caskToken;
+        const ad = this.p.appData?.find((x) => x.appPath === a.path || x.name === a.name);
+        const dataTag = ad && ad.dataSizeK > 1024 ? C.gray + ` (数据 ${fmtKB(ad.dataSizeK)})` + C.reset : '';
         rows.push({
           key: `a:${a.path}`,
           candidate: cand,
           cells: [
             this.selMark(this.selA.has(a.path), cand) + ' ',
-            padTrunc(a.name, 30),
+            padTrunc(a.name, 28),
             pad(fmtKB(a.sizeK), 10),
             pad(a.lastUsed ? fmtDays(a.lastUsed) : '无记录', 9),
             pad(String(a.useCount ?? '—'), 8),
             this.verdictCell(a.verdict),
-            C.gray + trunc(a.reason, 36) + C.reset,
+            C.gray + trunc(a.reason + dataTag, 38) + C.reset,
           ],
-          plain: `${a.name} ${V_PLAIN[a.verdict]} ${a.reason}`,
+          plain: `${a.name} ${V_PLAIN[a.verdict]} ${a.reason} ${ad ? fmtKB(ad.dataSizeK) : ''}`,
           sortVals: { name: a.name, sizeK: a.sizeK, lastUsed: a.lastUsed ?? -1 },
         });
       }
       this.sortRows(rows, [{ key: 'sizeK', label: '大小' }, { key: 'name', label: '名称' }, { key: 'lastUsed', label: '最后使用' }]);
+      return rows;
+    }
+    if (this.tab === 'appdata') {
+      for (const ad of this.p?.appData ?? []) {
+        if (!this.match(ad.name)) continue;
+        const cand = ad.verdict === 'stale' && !ad.running && !ad.system;
+        const pathNotes = ad.paths.slice(0, 2).map((p) => `${path.basename(p.path)}(${fmtKB(p.sizeK)})`).join('+');
+        const extraNote = ad.paths.length > 2 ? `等${ad.paths.length}处` : '';
+        let desc = ad.reason;
+        if (ad.running) {
+          desc = '运行中（需退出后清理）';
+        } else if (pathNotes) {
+          desc = `${pathNotes}${extraNote ? ' ' + extraNote : ''}；${ad.reason}`;
+        }
+        rows.push({
+          key: `u:${ad.name}`,
+          candidate: cand,
+          cells: [
+            this.selMark(this.selU.has(ad.name), cand) + ' ',
+            padTrunc(ad.name + (ad.running ? C.gray + ' 🟢运行中' + C.reset : ''), 24),
+            pad(fmtKB(ad.dataSizeK), 11),
+            pad(fmtKB(ad.appSizeK), 10),
+            pad(ad.lastUsed ? fmtDays(ad.lastUsed) : '无记录', 9),
+            this.verdictCell(ad.running ? 'blocked' : ad.verdict),
+            C.gray + trunc(desc, 40) + C.reset,
+          ],
+          plain: `${ad.name} ${fmtKB(ad.dataSizeK)} ${V_PLAIN[ad.verdict]} ${ad.reason}`,
+          sortVals: { name: ad.name, dataSizeK: ad.dataSizeK, appSizeK: ad.appSizeK, lastUsed: ad.lastUsed ?? -1 },
+        });
+      }
+      this.sortRows(rows, [
+        { key: 'dataSizeK', label: '数据大小' },
+        { key: 'name', label: '名称' },
+        { key: 'lastUsed', label: '最后打开' },
+        { key: 'appSizeK', label: '本体大小' },
+      ]);
       return rows;
     }
     if (this.tab === 'downloads') {
@@ -427,6 +467,11 @@ export class Tui {
     if (this.selF.size > 0) ops.push({ type: 'uninstall-formula', names: [...this.selF] });
     if (this.selC.size > 0) ops.push({ type: 'uninstall-cask', tokens: [...this.selC] });
     if (this.selA.size > 0) ops.push({ type: 'trash-app', paths: [...this.selA] });
+    if (this.selU.size > 0 && this.p) {
+      const selectedPlans = this.p.appData.filter((x) => this.selU.has(x.name));
+      const allPaths = selectedPlans.flatMap((x) => x.paths.map((p) => p.path));
+      ops.push({ type: 'trash-app-data', names: [...this.selU], paths: allPaths });
+    }
     if (this.selD.size > 0) ops.push({ type: 'trash-file', paths: [...this.selD] });
     if (this.selP.size > 0 && this.p) {
       const paths = this.p.projects.filter((x) => this.selP.has(x.path)).flatMap((x) => x.depPaths);
@@ -442,6 +487,7 @@ export class Tui {
     for (const name of this.selF) { const f = this.p.formulae.find((x) => x.name === name); if (f) { k += f.sizeK; n++; } }
     for (const t of this.selC) { const c = this.p.casks.find((x) => x.token === t); if (c) { k += c.sizeK; n++; } }
     for (const p of this.selA) { const a = this.p.apps.find((x) => x.path === p); if (a) { k += a.sizeK; n++; } }
+    for (const name of this.selU) { const ad = this.p.appData.find((x) => x.name === name); if (ad) { k += ad.dataSizeK; n++; } }
     for (const f of this.selD) { const d = this.state.downloads.find((x) => x.file === f); if (d) { k += d.sizeK; n++; } }
     for (const pp of this.selP) { const pr = this.p?.projects.find((x) => x.path === pp); if (pr) { k += pr.depSizeK; n++; } }
     for (const xp of this.selX) {
@@ -463,7 +509,7 @@ export class Tui {
       this.state = state;
       this.p = plan(state, this.cfg);
       this.history = readHistory();
-      this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
+      this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selU.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
       this.dryPreviewed = false;
       this.mode = 'table';
       this.setStatus(`扫描完成: ${state.formulae.length} 包 / ${state.apps.length} 应用`);
@@ -496,7 +542,7 @@ export class Tui {
         if (skipped.length > 0) this.log(C.yellow + `跳过: ${skipped.join('、')}` + C.reset);
         this.lastExecSummary = `${ok ? '✅' : '⚠️'} ${dry ? '预演' : '执行'}完成` + (skipped.length ? `，跳过 ${skipped.length} 项` : '');
         this.log(C.bold + '按 q/esc 返回列表 · 建议 r 重新扫描刷新数据' + C.reset);
-        this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
+        this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selU.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
         this.dryPreviewed = false;
       } else {
         this.dryPreviewed = true;
@@ -523,7 +569,7 @@ export class Tui {
       if (key.name === 'q') this.quitNow();
       else {
         this.mode = 'table';
-        const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
+        const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'appdata', '4': 'downloads', '5': 'projects', '6': 'cache', '7': 'history', '8': 'settings' };
         const seq = key.sequence ?? '';
         if (numTab[seq]) { this.tab = numTab[seq]; this.cursor = 0; this.offset = 0; }
         this.render();
@@ -543,7 +589,7 @@ export class Tui {
       // 任务进行中：仅放行纯视图操作（切页/移动/排序/退出），操作键锁定防重复触发
       const seq = key.sequence ?? '';
       const nav = ['up', 'down', 'k', 'j', 'left', 'right', 'q'].includes(key.name) || seq === 'G';
-      const isNum = ['1', '2', '3', '4', '5', '6', '7'].includes(seq);
+      const isNum = ['1', '2', '3', '4', '5', '6', '7', '8'].includes(seq);
       const isSort = key.name === 's' && seq === 's';
       if (nav || isNum || isSort) { this.handleTableKey(key); return; }
       this.setStatus(`⏳ ${this.busyMsg} — 操作键已锁定，完成后自动解锁（q/Ctrl+C 退出）`);
@@ -633,13 +679,13 @@ export class Tui {
   private isRowSelected(row: Row): boolean {
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    return (kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD).has(val);
+    return (kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'u' ? this.selU : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD).has(val);
   }
 
   private setRowSel(row: Row, sel: boolean): void {
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
+    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'u' ? this.selU : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
     if (sel) set.add(val); else set.delete(val);
   }
 
@@ -674,7 +720,7 @@ export class Tui {
     }
 
     // 数字切 tab
-    const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
+    const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'appdata', '4': 'downloads', '5': 'projects', '6': 'cache', '7': 'history', '8': 'settings' };
     if (key.sequence && numTab[key.sequence]) {
       this.tab = numTab[key.sequence];
       this.cursor = 0; this.offset = 0;
@@ -715,7 +761,7 @@ export class Tui {
     }
     const seq = key.sequence ?? '';
     if (name === 'a' && !key.shift) { this.selectAllCandidates(); return; }
-    if (seq === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear(); this.dryPreviewed = false; this.render(); return; }
+    if (seq === 'A') { this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selU.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear(); this.dryPreviewed = false; this.render(); return; }
     if (name === 'd') { this.startDry(); return; }
     if (name === 'x') { this.startExecute(); return; }
     if (name === 'c' && this.tab === 'cache') { this.startCacheClean(); return; }
@@ -734,7 +780,6 @@ export class Tui {
       const names = (h.deleted ?? []).filter((d) => d.kind === 'formula').map((d) => d.name);
       this.mode = 'input';
       this.input = { prompt: `重装 ${names.join(' ')} — 输入 yes 确认:`, value: '', purpose: 'yes' };
-      this.pendingReinstall = names;
       this.pendingOps = [{ type: 'install-formula', names }];
       this.render(); return;
     }
@@ -757,13 +802,12 @@ export class Tui {
     // 勾选/取消（任何行均可；非候选标记 [!] 警告，执行层复核兜底）
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
-    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
+    const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'u' ? this.selU : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
     if (set.has(val)) set.delete(val); else set.add(val);
     this.dryPreviewed = false;
     this.render();
   }
 
-  private pendingReinstall: string[] | null = null;
   private pendingOps: Op[] | null = null;
 
   private selectAllCandidates(): void {
@@ -775,6 +819,8 @@ export class Tui {
       for (const a of this.p.apps) if (a.verdict === 'stale' && !a.system && !a.caskToken) this.selA.add(a.path);
     } else if (this.tab === 'downloads') {
       for (const d of this.state.downloads) this.selD.add(d.file);
+    } else if (this.tab === 'appdata') {
+      for (const ad of this.p?.appData ?? []) if (ad.verdict === 'stale' && !ad.running && !ad.system) this.selU.add(ad.name);
     } else if (this.tab === 'projects') {
       for (const pr of this.p?.projects ?? []) if (pr.verdict === 'stale') this.selP.add(pr.path);
     }
@@ -855,8 +901,9 @@ export class Tui {
     if (this.busy) {
       out.push(C.cyan + ` ⏳ ${this.busyMsg}` + C.reset);
     } else if (this.p) {
-      const candK = this.p.summary.candidatesFormulaeK + this.p.summary.candidatesAppsK;
-      out.push(` 可清理: ${C.yellow}${this.p.summary.candidatesFormulae + this.p.summary.candidatesApps} 项 (~${fmtKB(candK)})${C.reset} · 缓存可释放 ${C.cyan}${fmtKB(this.state?.cache.brewCleanupFreedK ?? 0)}${C.reset} · 阈值 ${this.cfg.thresholdDays}天 · 宽限 ${this.cfg.graceDays}天` + (this.filter ? C.gray + ` · 过滤:"${this.filter}"` + C.reset : ''));
+      const candK = this.p.summary.candidatesFormulaeK + this.p.summary.candidatesAppsK + this.p.summary.candidatesAppDataK + this.p.summary.candidatesProjectsK;
+      const candN = this.p.summary.candidatesFormulae + this.p.summary.candidatesApps + this.p.summary.candidatesAppData + this.p.summary.candidatesProjects;
+      out.push(` 可清理: ${C.yellow}${candN} 项 (~${fmtKB(candK)})${C.reset} · 缓存可释放 ${C.cyan}${fmtKB(this.state?.cache.brewCleanupFreedK ?? 0)}${C.reset} · 阈值 ${this.cfg.thresholdDays}天 · 宽限 ${this.cfg.graceDays}天` + (this.filter ? C.gray + ` · 过滤:"${this.filter}"` + C.reset : ''));
     } else {
       out.push(C.gray + ' 无扫描数据' + C.reset);
     }
@@ -881,7 +928,7 @@ export class Tui {
       : this.lastExecSummary ? 'q/esc 返回 · r 重扫刷新 · j/k 滚动'
       : this.dryPreviewed ? C.bold + 'x 输入yes执行' + C.reset + C.gray + ' · q/esc 返回 · r 重扫' : 'q/esc 返回 · r 重扫 · j/k 滚动';
     else if (this.visual) keys = C.bold + '拖选中: ↑↓/jk/G 批量勾选 · v/esc 结束' + C.reset;
-    else if (this.busy) keys = '任务中: 操作键已锁定 · 1-7 切页 · j/k 移动 · q/Ctrl+C 退出';
+    else if (this.busy) keys = '任务中: 操作键已锁定 · 1-8 切页 · j/k 移动 · q/Ctrl+C 退出';
     else keys = 'space 勾选 · v 拖选 · a 全选 · / 搜索 · s 排序 · d 预演 · x 执行 · r 重扫 · ? 帮助 · q 退出';
     out.push(C.gray + ' ⌨ ' + selPart + keys + C.reset);
     out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
@@ -893,7 +940,7 @@ export class Tui {
       const section = (t: string) => out.push(C.cyan + C.bold + '   ── ' + t + ' ' + C.reset + C.gray + '─'.repeat(Math.max(W - 20 - t.length * 2, 6)) + C.reset);
       const row2 = (k: string, d: string) => out.push('     ' + C.yellow + C.bold + pad(k, 22) + C.reset + C.gray + d + C.reset);
       section('页签');
-      row2('1-7 / ←→', 'Homebrew · 应用 · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
+      row2('1-8 / ←→', 'Homebrew · 应用 · 应用数据 · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
       section('浏览与选择');
       row2('↑/k  ↓/j', '上下移动光标          g / G: 跳到顶部 / 底部');
       row2('空格', '勾选/取消当前行（任何行可选；非候选勾选后显示黄色 [!] 警告）');
@@ -918,6 +965,11 @@ export class Tui {
       else if (this.state) out.push(C.gray + `   数据: 扫描于 ${fmtDate(this.state.scannedAt)}（按 r 刷新）` + C.reset);
       this.finish(out, W, H);
       return;
+    }
+
+    if (this.tab === 'appdata' && this.mode === 'table') {
+      out.push(`  ${C.bold}保留 App 本体${C.reset}，仅将用户数据与缓存移入废纸篓（下次打开如同全新安装，可在废纸篓恢复）`);
+      out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
     }
 
     if (this.tab === 'cache' && this.mode === 'table') {

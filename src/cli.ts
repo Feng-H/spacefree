@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { loadConfig, saveConfig } from './config.js';
+import { loadConfig } from './config.js';
 import { runScan, loadState } from './scanner.js';
 import { plan } from './plan.js';
 import { fmtKB, fmtDate } from './util.js';
@@ -46,7 +46,11 @@ function has(flag: string): boolean {
 async function main(): Promise<void> {
   const cmd = process.argv[2] ?? 'tui';
   if (cmd === '--version' || cmd === 'version' || cmd === '-v') {
-    console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+    try {
+      console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+    } catch {
+      console.log('0.2.4');
+    }
     return;
   }
   const cfg = loadConfig();
@@ -158,11 +162,12 @@ function printReport(p: ReturnType<typeof plan>): void {
 ━━━ SpaceFree 报告 ━━━
 阈值: ${p.thresholdDays} 天未使用视为可清理 | 宽限期: ${p.graceDays} 天
 可清理 brew 包: ${sum.candidatesFormulae} 个 (${fmtKB(sum.candidatesFormulaeK)})
-可清理应用: ${sum.candidatesApps} 个 (${fmtKB(sum.candidatesAppsK)})
+可清理应用(本体): ${sum.candidatesApps} 个 (${fmtKB(sum.candidatesAppsK)})
+可清除应用数据(保留App): ${sum.candidatesAppData} 个 (${fmtKB(sum.candidatesAppDataK)})
 可清理项目依赖: ${sum.candidatesProjects} 个 (${fmtKB(sum.candidatesProjectsK)})
 被依赖保护: ${sum.needed} | 阻止(运行/服务/保护名单): ${sum.blocked} | 数据不足待复核: ${sum.review} | 保留: ${sum.kept}
 
-Top 候选:`);
+Top 候选 brew 包:`);
   const cands = p.formulae
     .filter((f) => f.verdict === 'unused' || f.verdict === 'stale')
     .sort((a, b) => b.sizeK - a.sizeK)
@@ -171,6 +176,18 @@ Top 候选:`);
     const last = f.lastUsed ? fmtDate(f.lastUsed) : '从未记录到';
     console.log(`  ${f.name.padEnd(22)} ${fmtKB(f.sizeK).padStart(9)}  最后使用: ${last.padEnd(18)} ${f.onRequest ? '主动安装' : '依赖装入'}`);
   }
+
+  const appDataCands = (p.appData ?? [])
+    .filter((ad) => ad.verdict === 'stale' && !ad.running)
+    .slice(0, 10);
+  if (appDataCands.length > 0) {
+    console.log(`\nTop 候选应用用户数据（App本体保留，仅清数据）:`);
+    for (const ad of appDataCands) {
+      const last = ad.lastUsed ? fmtDate(ad.lastUsed) : '无记录';
+      console.log(`  ${ad.name.padEnd(22)} ${fmtKB(ad.dataSizeK).padStart(9)}  最后打开: ${last.padEnd(18)} (App本体 ${fmtKB(ad.appSizeK)})`);
+    }
+  }
+
   console.log(`\n终端执行: spacefree clean --days ${p.thresholdDays} [--yes] | Web 面板: spacefree serve -o`);
 }
 

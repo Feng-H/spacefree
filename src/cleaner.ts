@@ -13,6 +13,7 @@ export type Op =
   | { type: 'brew-cache' }
   | { type: 'dev-cache'; names: string[] }
   | { type: 'trash-app'; paths: string[] }
+  | { type: 'trash-app-data'; names: string[]; paths: string[] }
   | { type: 'trash-file'; paths: string[] };
 
 export interface OpResult {
@@ -207,6 +208,53 @@ async function trash(paths: string[], dry: boolean, hooks: CleanerHooks): Promis
   return { op: { type: 'trash-app', paths }, ok: true, skipped, freedK: null, output };
 }
 
+async function trashAppData(names: string[], paths: string[], dry: boolean, hooks: CleanerHooks): Promise<OpResult> {
+  const output: string[] = [];
+  const skipped: string[] = [];
+  const existing = paths.filter((p) => fs.existsSync(p));
+  for (const p of paths) if (!fs.existsSync(p)) skipped.push(p);
+  if (existing.length === 0) {
+    hooks.log(`没有可清除的应用用户数据（涉及应用: ${names.join(', ')}）`);
+    return { op: { type: 'trash-app-data', names, paths }, ok: true, skipped, freedK: 0, output };
+  }
+  if (dry) {
+    let estK = 0;
+    const details: string[] = [];
+    for (const p of existing) {
+      const k = await duPathK(p);
+      estK += k;
+      details.push(`${p} (${fmtKB(k)})`);
+    }
+    hooks.step(`预演: 将移入废纸篓 ${names.length} 个应用的用户数据与缓存（共 ${existing.length} 项），预计释放 ~${fmtKB(estK)}（App本体保留）`);
+    for (const d of details) hooks.log(`  · ${d}`);
+    if (skipped.length > 0) hooks.log(`  （${skipped.length} 项已不存在，将跳过）`);
+    return { op: { type: 'trash-app-data', names, paths }, ok: true, skipped, freedK: estK, output };
+  }
+  hooks.step(`正在清理 ${names.length} 个应用的用户数据（移入废纸篓，共 ${existing.length} 项，App本体保留）…`);
+  const list = existing.map((p) => `POSIX file "${p}"`).join(', ');
+  const script = `tell application "Finder" to delete {${list}}`;
+  const r = await exec('osascript', ['-e', script], {
+    timeoutMs: 180_000,
+    onLine: (line) => { hooks.log(line); output.push(line); },
+  });
+  if (r.code !== 0) {
+    hooks.log('Finder 移入废纸篓失败，尝试直接移动到 ~/.Trash …');
+    let fail = false;
+    for (const p of existing) {
+      const dest = path.join(os.homedir(), '.Trash', `${path.basename(p)}.${Date.now()}`);
+      try {
+        fs.renameSync(p, dest);
+      } catch (err) {
+        fail = true;
+        hooks.log(`移动失败 ${p}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return { op: { type: 'trash-app-data', names, paths }, ok: !fail, skipped, freedK: null, output };
+  }
+  hooks.log(`已将 ${names.join(', ')} 的用户数据移入废纸篓（可在 Finder 废纸篓中恢复，App 本体完好保留）`);
+  return { op: { type: 'trash-app-data', names, paths }, ok: true, skipped, freedK: null, output };
+}
+
 export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks, estimatedK = 0): Promise<OpResult[]> {
   const freeBefore = dry ? null : await diskFreeK();
   const results: OpResult[] = [];
@@ -219,6 +267,7 @@ export async function runOps(ops: Op[], dry: boolean, hooks: CleanerHooks, estim
       else if (op.type === 'brew-cache') results.push(await brewCacheClean(dry, hooks));
       else if (op.type === 'dev-cache') results.push(await cleanDevCaches(op.names, dry, hooks));
       else if (op.type === 'trash-app') results.push(await trash(op.paths, dry, hooks));
+      else if (op.type === 'trash-app-data') results.push(await trashAppData(op.names, op.paths, dry, hooks));
       else if (op.type === 'trash-file') results.push(await trash(op.paths, dry, hooks));
     } catch (err) {
       hooks.log(`操作异常: ${err instanceof Error ? err.message : String(err)}`);

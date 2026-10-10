@@ -1,6 +1,6 @@
 import type { ScanState } from './scanner.js';
-import type { ProjectEntry } from './projects.js';
 import type { Config } from './config.js';
+import { fmtKB } from './util.js';
 
 export type Verdict = 'keep' | 'unused' | 'stale' | 'needed' | 'blocked' | 'review';
 
@@ -64,6 +64,22 @@ export interface ProjectPlan {
   reason: string;
 }
 
+export interface AppDataPlan {
+  name: string;
+  appPath: string;
+  bundleId: string | null;
+  appSizeK: number;
+  dataSizeK: number;
+  paths: { path: string; sizeK: number }[];
+  lastUsed: number | null;
+  lastUsedDaysAgo: number | null;
+  useCount: number | null;
+  running: boolean;
+  system: boolean;
+  verdict: Verdict;
+  reason: string;
+}
+
 export interface PlanResult {
   generatedAt: number;
   thresholdDays: number;
@@ -72,6 +88,7 @@ export interface PlanResult {
   casks: CaskPlan[];
   apps: AppPlan[];
   projects: ProjectPlan[];
+  appData: AppDataPlan[];
   summary: {
     candidatesFormulae: number;
     candidatesFormulaeK: number;
@@ -79,6 +96,8 @@ export interface PlanResult {
     candidatesAppsK: number;
     candidatesProjects: number;
     candidatesProjectsK: number;
+    candidatesAppData: number;
+    candidatesAppDataK: number;
     blocked: number;
     needed: number;
     kept: number;
@@ -102,6 +121,8 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     candidatesAppsK: 0,
     candidatesProjects: 0,
     candidatesProjectsK: 0,
+    candidatesAppData: 0,
+    candidatesAppDataK: 0,
     blocked: 0,
     needed: 0,
     kept: 0,
@@ -286,6 +307,45 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     };
   });
 
+  // 应用用户数据（保留 App 本体，清除应用数据与缓存）
+  const appData: AppDataPlan[] = (state.appData ?? []).map((ad) => {
+    const lastUsedDaysAgo = ad.lastUsed != null ? (now - ad.lastUsed) / 86400 : null;
+    let verdict: Verdict = 'review';
+    let reason = '';
+    if (ad.system) {
+      verdict = 'blocked'; reason = '系统自带应用，禁止清理数据';
+    } else if (ad.running) {
+      verdict = 'blocked'; reason = '应用正在运行中，清除数据前请先退出应用';
+    } else if (ad.lastUsed == null) {
+      verdict = 'review'; reason = 'Spotlight 无使用记录（可能从未打开）';
+    } else if (lastUsedDaysAgo! > thresholdDays) {
+      verdict = 'stale';
+      reason = `${Math.round(lastUsedDaysAgo!)} 天未打开；清除用户数据可释放 ~${fmtKB(ad.dataSizeK)}，App 本体保留`;
+    } else {
+      verdict = 'keep';
+      reason = `最近 ${Math.round(lastUsedDaysAgo!)} 天内使用过（使用 ${ad.useCount ?? 1} 次）`;
+    }
+    if (verdict === 'stale') {
+      summary.candidatesAppData += 1;
+      summary.candidatesAppDataK += ad.dataSizeK;
+    }
+    return {
+      name: ad.name,
+      appPath: ad.appPath,
+      bundleId: ad.bundleId,
+      appSizeK: ad.appSizeK,
+      dataSizeK: ad.dataSizeK,
+      paths: ad.paths,
+      lastUsed: ad.lastUsed,
+      lastUsedDaysAgo,
+      useCount: ad.useCount,
+      running: ad.running,
+      system: ad.system,
+      verdict,
+      reason,
+    };
+  });
+
   return {
     generatedAt: Math.floor(now),
     thresholdDays,
@@ -294,6 +354,7 @@ export function plan(state: ScanState, cfg: Config): PlanResult {
     casks,
     apps,
     projects,
+    appData,
     summary,
   };
 }
