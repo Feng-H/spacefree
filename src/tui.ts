@@ -258,9 +258,9 @@ export class Tui {
         const selData = ad ? this.selU.has(ad.name) : false;
 
         // 勾选状态标记：
-        //   [x]全删: 删本体 (含数据)
-        //   [u]仅数: 仅清数据保留本体
-        //   [ ]未选: 未选中
+        //   [x] 卸载App本体（且如包含数据一并联动清理）
+        //   [u] 仅清数据（保留本体，免重装）
+        //   [ ] 未选
         let mark = C.dim + '[ ]' + C.reset;
         if (selApp) {
           mark = candA ? C.green + '[x]' + C.reset : C.yellow + '[!]' + C.reset;
@@ -276,8 +276,10 @@ export class Tui {
         const verdictCell = this.verdictCell(a.verdict);
 
         let desc = a.reason;
-        if (selApp) {
-          desc = `⚡ 将移入废纸篓卸载 App 本体${ad && ad.dataSizeK > 0 ? '（建议联动清除数据）' : ''}`;
+        if (selApp && selData) {
+          desc = `⚡ 卸载本体 + 🧹 清除数据 ~${fmtKB(ad?.dataSizeK ?? 0)}`;
+        } else if (selApp) {
+          desc = `⚡ 将移入废纸篓卸载 App 本体${ad && ad.dataSizeK > 0 ? ` (连同数据 ~${fmtKB(ad.dataSizeK)})` : ''}`;
         } else if (selData) {
           desc = `🧹 仅清除用户数据 ~${fmtKB(ad?.dataSizeK ?? 0)}，App 本体保留`;
         } else if (ad?.running) {
@@ -598,7 +600,7 @@ export class Tui {
       // 任务进行中：仅放行纯视图操作（切页/移动/排序/退出），操作键锁定防重复触发
       const seq = key.sequence ?? '';
       const nav = ['up', 'down', 'k', 'j', 'left', 'right', 'q'].includes(key.name) || seq === 'G';
-      const isNum = ['1', '2', '3', '4', '5', '6', '7', '8'].includes(seq);
+      const isNum = ['1', '2', '3', '4', '5', '6', '7'].includes(seq);
       const isSort = key.name === 's' && seq === 's';
       if (nav || isNum || isSort) { this.handleTableKey(key); return; }
       this.setStatus(`⏳ ${this.busyMsg} — 操作键已锁定，完成后自动解锁（q/Ctrl+C 退出）`);
@@ -768,9 +770,6 @@ export class Tui {
     if (name === 'u' && this.tab === 'apps' && rows.length > 0) {
       this.toggleAppDataOnly(rows); return;
     }
-    if (name === 'U' && this.tab === 'apps') {
-      this.selectAllAppDataCandidates(); return;
-    }
     if (name === 'space' || name === 'return' || name === 'enter') {
       this.activateRow(rows); return;
     }
@@ -818,36 +817,16 @@ export class Tui {
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
 
-    // 应用页特殊三态交互：
-    // 未选 [ ] → 仅清数据 [u] (若有数据) → 全卸本体 [x] → 取消 [ ]
-    // 若该应用无数据，则直接 [ ] ⇄ [x]
+    // 应用页：space/enter 切换卸载本体 [x]；u 键切换仅清数据 [u]（两者独立）
     if (this.tab === 'apps' && kind === 'a') {
       const appPath = val;
       const app = this.p?.apps.find((x) => x.path === appPath);
-      const ad = this.p?.appData.find((x) => x.appPath === appPath || (app && x.name === app.name));
-      const hasData = !!(ad && ad.dataSizeK > 0);
-      const selApp = this.selA.has(appPath);
-      const selData = ad ? this.selU.has(ad.name) : false;
-
-      if (!selApp && !selData) {
-        // 第一击：如果有数据优先进 [u] 仅清数据；无数据直接进 [x] 卸本体
-        if (hasData) {
-          this.selU.add(ad.name);
-          this.setStatus(`已标记仅清数据: ${ad.name} (~${fmtKB(ad.dataSizeK)})；再按切换为卸载本体`);
-        } else {
-          this.selA.add(appPath);
-          this.setStatus(`已标记卸载本体: ${app?.name ?? appPath}`);
-        }
-      } else if (selData && !selApp) {
-        // 第二击：从 [u] 切换到 [x] 卸载本体
-        if (ad) this.selU.delete(ad.name);
-        this.selA.add(appPath);
-        this.setStatus(`已切换为卸载 App 本体: ${app?.name ?? appPath}`);
-      } else {
-        // 第三击（或已在 selApp）：彻底取消
+      if (this.selA.has(appPath)) {
         this.selA.delete(appPath);
-        if (ad) this.selU.delete(ad.name);
-        this.setStatus(`已取消选择: ${app?.name ?? appPath}`);
+        this.setStatus(`已取消卸载: ${app?.name ?? appPath}`);
+      } else {
+        this.selA.add(appPath);
+        this.setStatus(`已标记卸载 App 本体: ${app?.name ?? appPath}`);
       }
       this.dryPreviewed = false;
       this.render();
@@ -873,30 +852,13 @@ export class Tui {
       this.setStatus(`该应用暂无关联的用户数据`);
       return;
     }
-    // 互斥：清掉 selA，toggle selU
-    this.selA.delete(appPath);
     if (this.selU.has(ad.name)) {
       this.selU.delete(ad.name);
-      this.setStatus(`取消清除数据: ${ad.name}`);
+      this.setStatus(`已取消仅清数据: ${ad.name}`);
     } else {
       this.selU.add(ad.name);
       this.setStatus(`已标记仅清数据: ${ad.name} (~${fmtKB(ad.dataSizeK)})，App 本体保留`);
     }
-    this.dryPreviewed = false;
-    this.render();
-  }
-
-  /** 应用页按 U：全选所有久未使用的应用用户数据候选（保留 App 本体） */
-  private selectAllAppDataCandidates(): void {
-    if (!this.p) return;
-    let count = 0;
-    for (const ad of this.p.appData) {
-      if (ad.verdict === 'stale' && !ad.running && !ad.system && ad.dataSizeK > 0) {
-        this.selU.add(ad.name);
-        count++;
-      }
-    }
-    this.setStatus(`已全选 ${count} 个应用的用户数据候选 (~${fmtKB(this.selTotals().k)})`);
     this.dryPreviewed = false;
     this.render();
   }
@@ -909,7 +871,7 @@ export class Tui {
       for (const f of this.p.formulae) if (isCand(f.verdict)) this.selF.add(f.name);
       for (const c of this.p.casks) if (isCand(c.verdict)) this.selC.add(c.token);
     } else if (this.tab === 'apps') {
-      // a: 优先全选待卸载 App 本体；若用户想要仅清数据可用大写 U
+      // a: 全选可卸载的久未使用 App 本体候选；仅清数据用 u 键逐个切换
       for (const a of this.p.apps) if (a.verdict === 'stale' && !a.system && !a.caskToken) this.selA.add(a.path);
     } else if (this.tab === 'downloads') {
       for (const d of this.state.downloads) this.selD.add(d.file);
@@ -1092,8 +1054,8 @@ export class Tui {
       : this.lastExecSummary ? 'q/esc 返回 · r 重扫刷新 · j/k 滚动'
       : this.dryPreviewed ? C.bold + 'x 输入yes执行' + C.reset + C.gray + ' · q/esc 返回 · r 重扫' : 'q/esc 返回 · r 重扫 · j/k 滚动';
     else if (this.visual) keys = C.bold + '拖选中: ↑↓/jk/G 批量勾选 · v/esc 结束' + C.reset;
-    else if (this.busy) keys = '任务中: 操作键已锁定 · 1-8 切页 · j/k 移动 · q/Ctrl+C 退出';
-    else if (this.tab === 'apps') keys = 'space 切换[u]清数据/[x]卸本体 · u 仅清数据 · a 全选App · U 全选数据 · / 搜索 · s 排序 · d 预演 · x 执行';
+    else if (this.busy) keys = '任务中: 操作键已锁定 · 1-7 切页 · j/k 移动 · q/Ctrl+C 退出';
+    else if (this.tab === 'apps') keys = 'space 勾选[x]卸本体 · u 勾选[u]仅清数据 · a 全选候选 · / 搜索 · s 排序 · d 预演 · x 执行 · r 重扫 · ? 帮助';
     else keys = 'space 勾选 · v 拖选 · a 全选 · / 搜索 · s 排序 · d 预演 · x 执行 · r 重扫 · ? 帮助 · q 退出';
     out.push(C.gray + ' ⌨ ' + selPart + keys + C.reset);
     out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
@@ -1108,8 +1070,8 @@ export class Tui {
       row2('1-7 / ←→', 'Homebrew · 应用(含数据) · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
       section('浏览与选择');
       row2('↑/k  ↓/j', '上下移动光标          g / G: 跳到顶部 / 底部');
-      row2('空格', '勾选/取消：常规页[x]勾选；应用页循环切换 [ ]未选 → [u]仅清数据 → [x]卸载本体');
-      row2('u / U (应用页)', 'u: 快速切换【仅清数据】；U: 全选所有久未使用的应用用户数据');
+      row2('空格', '勾选/取消当前行（应用页=勾选[x]卸载本体；非候选勾选后显示黄色 [!] 警告）');
+      row2('u (应用页)', '勾选/取消[u]仅清用户数据（保留 App 本体，可与[x]叠加）');
       row2('v', '批量拖选（vim 风格）：进入后移动光标整批勾选/取消，再按 v 结束');
       row2('a / A', '全选候选 / 清空全部选择');
       row2('/  搜索', '输入关键字过滤（enter 结束输入，esc 返回，内容保留）');
@@ -1134,7 +1096,7 @@ export class Tui {
     }
 
     if (this.tab === 'apps' && this.mode === 'table') {
-      out.push(`  ${C.bold}应用与数据一体化${C.reset}：${C.cyan}[u]仅清数据${C.reset}(保留本体，免卸载) · ${C.green}[x]卸载本体${C.reset} · space/u 切换 · 大写 U 全选久未使用的应用数据`);
+      out.push(`  ${C.bold}应用与数据一体化${C.reset}：${C.cyan}[u]仅清数据${C.reset}(保留本体，免卸载) · ${C.green}[x]卸载本体${C.reset} · space 勾选卸载 · u 勾选仅清数据（可叠加）`);
       out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
     }
 
@@ -1156,13 +1118,20 @@ export class Tui {
       return;
     }
 
+    // 先构建行（刷新 sortDefs），再渲染锁定表头与排序指示
+    const rows = this.buildRows();
     // 表格表头（锁定固定显示）
     out.push(this.renderHeader());
+    // 排序指示：所有页签统一显示在表头下方
+    const sortDef = this.sortDefs[this.tab];
+    if (sortDef && sortDef.length > 0) {
+      const cur = sortDef[(this.sortIdx[this.tab] ?? 0) % sortDef.length];
+      out.push(' ' + C.bold + C.cyan + '▸ 排序' + C.reset + C.white + `: 按${cur.label}` + C.reset + C.gray + '  (s 切换)' + C.reset);
+    }
     out.push(C.gray + ' ' + '┄'.repeat(Math.max(W - 4, 20)) + C.reset);
 
     // 表格数据行
-    const rows = this.buildRows();
-    const bodyH = Math.max(H - 9, 3);
+    const bodyH = Math.max(H - 10, 3);
     if (rows.length === 0) {
       out.push(C.gray + ' （无数据 — ' + (this.filter ? '无匹配项，esc 清除过滤' : '尚未扫描，按 r 开始') + '）' + C.reset);
     }
@@ -1178,7 +1147,7 @@ export class Tui {
       out.push(cursorMark + line + (plainLen < W - 2 ? '' : ''));
     });
     if (rows.length > 0) {
-      out.push(C.gray + ` ${Math.min(this.offset + 1, rows.length)}-${Math.min(this.offset + bodyH, rows.length)}/${rows.length} 行` + (this.sortDefs[this.tab]?.length ? ` · 排序: ${this.sortDefs[this.tab][(this.sortIdx[this.tab] ?? 0) % this.sortDefs[this.tab].length].label} (s 切换)` : '') + C.reset);
+      out.push(C.gray + ` ${Math.min(this.offset + 1, rows.length)}-${Math.min(this.offset + bodyH, rows.length)}/${rows.length} 行` + C.reset);
     }
     this.finish(out, W, H);
   }
