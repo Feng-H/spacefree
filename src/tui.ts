@@ -77,7 +77,7 @@ interface Row {
   sortVals: Record<string, string | number | null>;
 }
 
-type TabId = 'brew' | 'apps' | 'appdata' | 'downloads' | 'projects' | 'cache' | 'history' | 'settings';
+type TabId = 'brew' | 'apps' | 'downloads' | 'projects' | 'cache' | 'history' | 'settings';
 
 interface InputState { prompt: string; value: string; purpose: 'yes' | 'search' | 'number' | 'text' | 'protect' }
 
@@ -91,7 +91,6 @@ export class Tui {
   private tabs: { id: TabId; label: string }[] = [
     { id: 'brew', label: 'Homebrew' },
     { id: 'apps', label: '应用' },
-    { id: 'appdata', label: '应用数据' },
     { id: 'downloads', label: '下载' },
     { id: 'projects', label: '项目依赖' },
     { id: 'cache', label: '缓存' },
@@ -100,12 +99,12 @@ export class Tui {
   ];
   private cursor = 0;
   private offset = 0;
-  private sortIdx: Record<string, number> = { brew: 0, apps: 0, appdata: 0, downloads: 0, projects: 0, cache: 0 };
+  private sortIdx: Record<string, number> = { brew: 0, apps: 0, downloads: 0, projects: 0, cache: 0 };
 
   private selF = new Set<string>();   // formula
   private selC = new Set<string>();   // cask
-  private selA = new Set<string>();   // app path
-  private selU = new Set<string>();   // app data (by app name)
+  private selA = new Set<string>();   // app path (for uninstall)
+  private selU = new Set<string>();   // app name (for user data clear)
   private selD = new Set<string>();   // download file
   private selP = new Set<string>();   // project path
   private selX = new Set<string>();   // cache 大目录 path
@@ -204,7 +203,6 @@ export class Tui {
     if (!this.state || !this.p) return [];
     const rows: Row[] = [];
     if (this.tab === 'brew') {
-      const s = this.state;
       const fl = this.p.formulae;
       const ck = this.p.casks;
       const filteredF = fl.filter((f) => this.match(f.name + ' ' + f.desc));
@@ -253,61 +251,67 @@ export class Tui {
     if (this.tab === 'apps') {
       for (const a of this.p.apps) {
         if (!this.match(a.name)) continue;
-        const cand = a.verdict === 'stale' && !a.system && !a.caskToken;
+        const candA = a.verdict === 'stale' && !a.system && !a.caskToken;
         const ad = this.p.appData?.find((x) => x.appPath === a.path || x.name === a.name);
-        const dataTag = ad && ad.dataSizeK > 1024 ? C.gray + ` (数据 ${fmtKB(ad.dataSizeK)})` + C.reset : '';
+        const candU = !!(ad && ad.verdict === 'stale' && !ad.running && !ad.system && ad.dataSizeK > 0);
+        const selApp = this.selA.has(a.path);
+        const selData = ad ? this.selU.has(ad.name) : false;
+
+        // 勾选状态标记：
+        //   [x]全删: 删本体 (含数据)
+        //   [u]仅数: 仅清数据保留本体
+        //   [ ]未选: 未选中
+        let mark = C.dim + '[ ]' + C.reset;
+        if (selApp) {
+          mark = candA ? C.green + '[x]' + C.reset : C.yellow + '[!]' + C.reset;
+        } else if (selData) {
+          mark = candU ? C.cyan + '[u]' + C.reset : C.yellow + '[!]' + C.reset;
+        }
+
+        const runTag = ad?.running ? C.gray + ' 🟢' + C.reset : '';
+        const nameDisplay = padTrunc(a.name + runTag, 26);
+        const appSizeCell = pad(fmtKB(a.sizeK), 10);
+        const dataSizeCell = pad(ad && ad.dataSizeK > 0 ? fmtKB(ad.dataSizeK) : '—', 10);
+        const lastUsedCell = pad(a.lastUsed ? fmtDays(a.lastUsed) : '无记录', 9);
+        const verdictCell = this.verdictCell(a.verdict);
+
+        let desc = a.reason;
+        if (selApp) {
+          desc = `⚡ 将移入废纸篓卸载 App 本体${ad && ad.dataSizeK > 0 ? '（建议联动清除数据）' : ''}`;
+        } else if (selData) {
+          desc = `🧹 仅清除用户数据 ~${fmtKB(ad?.dataSizeK ?? 0)}，App 本体保留`;
+        } else if (ad?.running) {
+          desc = `🟢 运行中；数据 ~${fmtKB(ad.dataSizeK)}（需退出后清理）`;
+        } else if (ad && ad.dataSizeK > 1024) {
+          desc = `数据 ~${fmtKB(ad.dataSizeK)}；${a.reason}`;
+        }
+
         rows.push({
           key: `a:${a.path}`,
-          candidate: cand,
+          candidate: candA || candU,
           cells: [
-            this.selMark(this.selA.has(a.path), cand) + ' ',
-            padTrunc(a.name, 28),
-            pad(fmtKB(a.sizeK), 10),
-            pad(a.lastUsed ? fmtDays(a.lastUsed) : '无记录', 9),
-            pad(String(a.useCount ?? '—'), 8),
-            this.verdictCell(a.verdict),
-            C.gray + trunc(a.reason + dataTag, 38) + C.reset,
+            mark + ' ',
+            nameDisplay,
+            appSizeCell,
+            dataSizeCell,
+            lastUsedCell,
+            verdictCell,
+            C.gray + trunc(desc, 34) + C.reset,
           ],
-          plain: `${a.name} ${V_PLAIN[a.verdict]} ${a.reason} ${ad ? fmtKB(ad.dataSizeK) : ''}`,
-          sortVals: { name: a.name, sizeK: a.sizeK, lastUsed: a.lastUsed ?? -1 },
-        });
-      }
-      this.sortRows(rows, [{ key: 'sizeK', label: '大小' }, { key: 'name', label: '名称' }, { key: 'lastUsed', label: '最后使用' }]);
-      return rows;
-    }
-    if (this.tab === 'appdata') {
-      for (const ad of this.p?.appData ?? []) {
-        if (!this.match(ad.name)) continue;
-        const cand = ad.verdict === 'stale' && !ad.running && !ad.system;
-        const pathNotes = ad.paths.slice(0, 2).map((p) => `${path.basename(p.path)}(${fmtKB(p.sizeK)})`).join('+');
-        const extraNote = ad.paths.length > 2 ? `等${ad.paths.length}处` : '';
-        let desc = ad.reason;
-        if (ad.running) {
-          desc = '运行中（需退出后清理）';
-        } else if (pathNotes) {
-          desc = `${pathNotes}${extraNote ? ' ' + extraNote : ''}；${ad.reason}`;
-        }
-        rows.push({
-          key: `u:${ad.name}`,
-          candidate: cand,
-          cells: [
-            this.selMark(this.selU.has(ad.name), cand) + ' ',
-            padTrunc(ad.name + (ad.running ? C.gray + ' 🟢运行中' + C.reset : ''), 24),
-            pad(fmtKB(ad.dataSizeK), 11),
-            pad(fmtKB(ad.appSizeK), 10),
-            pad(ad.lastUsed ? fmtDays(ad.lastUsed) : '无记录', 9),
-            this.verdictCell(ad.running ? 'blocked' : ad.verdict),
-            C.gray + trunc(desc, 40) + C.reset,
-          ],
-          plain: `${ad.name} ${fmtKB(ad.dataSizeK)} ${V_PLAIN[ad.verdict]} ${ad.reason}`,
-          sortVals: { name: ad.name, dataSizeK: ad.dataSizeK, appSizeK: ad.appSizeK, lastUsed: ad.lastUsed ?? -1 },
+          plain: `${a.name} ${fmtKB(a.sizeK)} 数据:${ad ? fmtKB(ad.dataSizeK) : '0'} ${V_PLAIN[a.verdict]} ${a.reason}`,
+          sortVals: {
+            name: a.name,
+            sizeK: a.sizeK,
+            dataSizeK: ad?.dataSizeK ?? 0,
+            lastUsed: a.lastUsed ?? -1,
+          },
         });
       }
       this.sortRows(rows, [
+        { key: 'sizeK', label: '本体大小' },
         { key: 'dataSizeK', label: '数据大小' },
         { key: 'name', label: '名称' },
         { key: 'lastUsed', label: '最后打开' },
-        { key: 'appSizeK', label: '本体大小' },
       ]);
       return rows;
     }
@@ -362,7 +366,12 @@ export class Tui {
         rows.push({
           key: `ncmd:${d.name}`,
           candidate: false,
-          cells: [C.dim + ' ─ ' + C.reset + ' ', padTrunc(d.name, 22), pad(fmtKB(d.sizeK), 10), C.gray + padTrunc(d.cleanCmd ?? '', 30) + C.reset, C.gray + '[n 全部清理]' + C.reset],
+          cells: [
+            C.dim + ' ─ ' + C.reset + ' ',
+            padTrunc(d.name, 24),
+            pad(fmtKB(d.sizeK), 10),
+            C.gray + trunc(d.cleanCmd ? `${d.cleanCmd} [n 全部清理]` : '[n 全部清理]', 58) + C.reset,
+          ],
           plain: `${d.name} ${d.cleanCmd ?? ''}`,
           sortVals: {},
         });
@@ -569,7 +578,7 @@ export class Tui {
       if (key.name === 'q') this.quitNow();
       else {
         this.mode = 'table';
-        const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'appdata', '4': 'downloads', '5': 'projects', '6': 'cache', '7': 'history', '8': 'settings' };
+        const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
         const seq = key.sequence ?? '';
         if (numTab[seq]) { this.tab = numTab[seq]; this.cursor = 0; this.offset = 0; }
         this.render();
@@ -720,7 +729,7 @@ export class Tui {
     }
 
     // 数字切 tab
-    const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'appdata', '4': 'downloads', '5': 'projects', '6': 'cache', '7': 'history', '8': 'settings' };
+    const numTab: Record<string, TabId> = { '1': 'brew', '2': 'apps', '3': 'downloads', '4': 'projects', '5': 'cache', '6': 'history', '7': 'settings' };
     if (key.sequence && numTab[key.sequence]) {
       this.tab = numTab[key.sequence];
       this.cursor = 0; this.offset = 0;
@@ -755,6 +764,12 @@ export class Tui {
       this.visualTarget = !this.isRowSelected(rows[Math.min(this.cursor, rows.length - 1)]);
       this.applyVisual(rows);
       this.render(); return;
+    }
+    if (name === 'u' && this.tab === 'apps' && rows.length > 0) {
+      this.toggleAppDataOnly(rows); return;
+    }
+    if (name === 'U' && this.tab === 'apps') {
+      this.selectAllAppDataCandidates(); return;
     }
     if (name === 'space' || name === 'return' || name === 'enter') {
       this.activateRow(rows); return;
@@ -802,8 +817,86 @@ export class Tui {
     // 勾选/取消（任何行均可；非候选标记 [!] 警告，执行层复核兜底）
     const [kind, ...rest] = row.key.split(':');
     const val = rest.join(':');
+
+    // 应用页特殊三态交互：
+    // 未选 [ ] → 仅清数据 [u] (若有数据) → 全卸本体 [x] → 取消 [ ]
+    // 若该应用无数据，则直接 [ ] ⇄ [x]
+    if (this.tab === 'apps' && kind === 'a') {
+      const appPath = val;
+      const app = this.p?.apps.find((x) => x.path === appPath);
+      const ad = this.p?.appData.find((x) => x.appPath === appPath || (app && x.name === app.name));
+      const hasData = !!(ad && ad.dataSizeK > 0);
+      const selApp = this.selA.has(appPath);
+      const selData = ad ? this.selU.has(ad.name) : false;
+
+      if (!selApp && !selData) {
+        // 第一击：如果有数据优先进 [u] 仅清数据；无数据直接进 [x] 卸本体
+        if (hasData) {
+          this.selU.add(ad.name);
+          this.setStatus(`已标记仅清数据: ${ad.name} (~${fmtKB(ad.dataSizeK)})；再按切换为卸载本体`);
+        } else {
+          this.selA.add(appPath);
+          this.setStatus(`已标记卸载本体: ${app?.name ?? appPath}`);
+        }
+      } else if (selData && !selApp) {
+        // 第二击：从 [u] 切换到 [x] 卸载本体
+        if (ad) this.selU.delete(ad.name);
+        this.selA.add(appPath);
+        this.setStatus(`已切换为卸载 App 本体: ${app?.name ?? appPath}`);
+      } else {
+        // 第三击（或已在 selApp）：彻底取消
+        this.selA.delete(appPath);
+        if (ad) this.selU.delete(ad.name);
+        this.setStatus(`已取消选择: ${app?.name ?? appPath}`);
+      }
+      this.dryPreviewed = false;
+      this.render();
+      return;
+    }
+
     const set = kind === 'f' ? this.selF : kind === 'c' ? this.selC : kind === 'a' ? this.selA : kind === 'u' ? this.selU : kind === 'p' ? this.selP : kind === 'x' ? this.selX : this.selD;
     if (set.has(val)) set.delete(val); else set.add(val);
+    this.dryPreviewed = false;
+    this.render();
+  }
+
+  /** 在应用页单按 u：直接在【仅清数据】和【未选】之间切换 */
+  private toggleAppDataOnly(rows: Row[]): void {
+    if (rows.length === 0) return;
+    const row = rows[Math.min(this.cursor, rows.length - 1)];
+    const [kind, ...rest] = row.key.split(':');
+    if (kind !== 'a') return;
+    const appPath = rest.join(':');
+    const app = this.p?.apps.find((x) => x.path === appPath);
+    const ad = this.p?.appData.find((x) => x.appPath === appPath || (app && x.name === app.name));
+    if (!ad || ad.dataSizeK === 0) {
+      this.setStatus(`该应用暂无关联的用户数据`);
+      return;
+    }
+    // 互斥：清掉 selA，toggle selU
+    this.selA.delete(appPath);
+    if (this.selU.has(ad.name)) {
+      this.selU.delete(ad.name);
+      this.setStatus(`取消清除数据: ${ad.name}`);
+    } else {
+      this.selU.add(ad.name);
+      this.setStatus(`已标记仅清数据: ${ad.name} (~${fmtKB(ad.dataSizeK)})，App 本体保留`);
+    }
+    this.dryPreviewed = false;
+    this.render();
+  }
+
+  /** 应用页按 U：全选所有久未使用的应用用户数据候选（保留 App 本体） */
+  private selectAllAppDataCandidates(): void {
+    if (!this.p) return;
+    let count = 0;
+    for (const ad of this.p.appData) {
+      if (ad.verdict === 'stale' && !ad.running && !ad.system && ad.dataSizeK > 0) {
+        this.selU.add(ad.name);
+        count++;
+      }
+    }
+    this.setStatus(`已全选 ${count} 个应用的用户数据候选 (~${fmtKB(this.selTotals().k)})`);
     this.dryPreviewed = false;
     this.render();
   }
@@ -816,11 +909,10 @@ export class Tui {
       for (const f of this.p.formulae) if (isCand(f.verdict)) this.selF.add(f.name);
       for (const c of this.p.casks) if (isCand(c.verdict)) this.selC.add(c.token);
     } else if (this.tab === 'apps') {
+      // a: 优先全选待卸载 App 本体；若用户想要仅清数据可用大写 U
       for (const a of this.p.apps) if (a.verdict === 'stale' && !a.system && !a.caskToken) this.selA.add(a.path);
     } else if (this.tab === 'downloads') {
       for (const d of this.state.downloads) this.selD.add(d.file);
-    } else if (this.tab === 'appdata') {
-      for (const ad of this.p?.appData ?? []) if (ad.verdict === 'stale' && !ad.running && !ad.system) this.selU.add(ad.name);
     } else if (this.tab === 'projects') {
       for (const pr of this.p?.projects ?? []) if (pr.verdict === 'stale') this.selP.add(pr.path);
     }
@@ -881,6 +973,78 @@ export class Tui {
     this.render();
   }
 
+  /** 渲染锁定的表头行（带高亮、对齐与下划线） */
+  private renderHeader(): string {
+    const H_STYLE = C.bold + C.cyan;
+    const padH = (s: string, n: number) => padTrunc(H_STYLE + s + C.reset, n);
+    let cells: string[] = [];
+
+    if (this.tab === 'brew') {
+      cells = [
+        '   ',
+        padH('名称 / Token', 24),
+        padH('大小', 10),
+        padH('安装时间', 9),
+        padH('最后使用', 9),
+        padH('次数', 6),
+        padH('判定', 12),
+        padH('原因 / 说明', 36),
+      ];
+    } else if (this.tab === 'apps') {
+      cells = [
+        '   ',
+        padH('应用名称', 26),
+        padH('本体大小', 10),
+        padH('数据大小', 10),
+        padH('最后打开', 9),
+        padH('判定', 12),
+        padH('当前动作 / 说明', 34),
+      ];
+    } else if (this.tab === 'downloads') {
+      cells = [
+        '   ',
+        padH('文件名', 50),
+        padH('大小', 10),
+        padH('下载时间', 9),
+        padH('类型', 8),
+      ];
+    } else if (this.tab === 'projects') {
+      cells = [
+        '   ',
+        padH('项目名称', 26),
+        padH('依赖大小', 10),
+        padH('依赖目录', 14),
+        padH('修改时间', 9),
+        padH('最后运行', 9),
+        padH('判定', 12),
+        padH('说明', 34),
+      ];
+    } else if (this.tab === 'cache') {
+      cells = [
+        '   ',
+        padH('缓存项目 / 路径', 24),
+        padH('大小', 10),
+        padH('清理命令 / 风险提示', 58),
+      ];
+    } else if (this.tab === 'history') {
+      cells = [
+        '   ',
+        padH('清理时间', 18),
+        padH('清理动作与结果', 70),
+        padH('快速重装', 24),
+      ];
+    } else if (this.tab === 'settings') {
+      cells = [
+        '   ',
+        padH('配置项', 34),
+        padH('当前值', 46),
+        padH('操作提示', 20),
+      ];
+    }
+
+    return ' ' + cells.join('');
+  }
+
   /* ---------- 渲染 ---------- */
   private scheduleRender(): void {
     if (this.renderQueued) return;
@@ -929,6 +1093,7 @@ export class Tui {
       : this.dryPreviewed ? C.bold + 'x 输入yes执行' + C.reset + C.gray + ' · q/esc 返回 · r 重扫' : 'q/esc 返回 · r 重扫 · j/k 滚动';
     else if (this.visual) keys = C.bold + '拖选中: ↑↓/jk/G 批量勾选 · v/esc 结束' + C.reset;
     else if (this.busy) keys = '任务中: 操作键已锁定 · 1-8 切页 · j/k 移动 · q/Ctrl+C 退出';
+    else if (this.tab === 'apps') keys = 'space 切换[u]清数据/[x]卸本体 · u 仅清数据 · a 全选App · U 全选数据 · / 搜索 · s 排序 · d 预演 · x 执行';
     else keys = 'space 勾选 · v 拖选 · a 全选 · / 搜索 · s 排序 · d 预演 · x 执行 · r 重扫 · ? 帮助 · q 退出';
     out.push(C.gray + ' ⌨ ' + selPart + keys + C.reset);
     out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
@@ -940,10 +1105,11 @@ export class Tui {
       const section = (t: string) => out.push(C.cyan + C.bold + '   ── ' + t + ' ' + C.reset + C.gray + '─'.repeat(Math.max(W - 20 - t.length * 2, 6)) + C.reset);
       const row2 = (k: string, d: string) => out.push('     ' + C.yellow + C.bold + pad(k, 22) + C.reset + C.gray + d + C.reset);
       section('页签');
-      row2('1-8 / ←→', 'Homebrew · 应用 · 应用数据 · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
+      row2('1-7 / ←→', 'Homebrew · 应用(含数据) · 下载安装包 · 项目依赖 · 缓存 · 清理历史 · 设置');
       section('浏览与选择');
       row2('↑/k  ↓/j', '上下移动光标          g / G: 跳到顶部 / 底部');
-      row2('空格', '勾选/取消当前行（任何行可选；非候选勾选后显示黄色 [!] 警告）');
+      row2('空格', '勾选/取消：常规页[x]勾选；应用页循环切换 [ ]未选 → [u]仅清数据 → [x]卸载本体');
+      row2('u / U (应用页)', 'u: 快速切换【仅清数据】；U: 全选所有久未使用的应用用户数据');
       row2('v', '批量拖选（vim 风格）：进入后移动光标整批勾选/取消，再按 v 结束');
       row2('a / A', '全选候选 / 清空全部选择');
       row2('/  搜索', '输入关键字过滤（enter 结束输入，esc 返回，内容保留）');
@@ -958,7 +1124,7 @@ export class Tui {
       row2('设置页 enter/h/b', '修改阈值·宽限·保护名单 / 装监控钩子 / 导出 Brewfile 留底');
       row2('缓存页 c / n', '清 brew 缓存 / 用官方命令清开发缓存（npm·pip·uv…）');
       section('标记说明');
-      out.push(C.gray + '     [x] 已选候选(绿)   [!] 已选非候选(黄,警告)   [ ] 未选' + C.reset);
+      out.push(C.gray + '     [x] 已选卸载/删除   [u] 仅清用户数据(保留App)   [!] 非候选(警告)   [ ] 未选' + C.reset);
       out.push(C.gray + '     🔴从未使用  🟠久未使用  🟢在用  🔗被依赖  ⛔已阻止  🔵待复核' + C.reset);
       out.push('');
       if (this.busy) out.push(C.cyan + `   ⏳ ${this.busyMsg}` + C.reset);
@@ -967,8 +1133,8 @@ export class Tui {
       return;
     }
 
-    if (this.tab === 'appdata' && this.mode === 'table') {
-      out.push(`  ${C.bold}保留 App 本体${C.reset}，仅将用户数据与缓存移入废纸篓（下次打开如同全新安装，可在废纸篓恢复）`);
+    if (this.tab === 'apps' && this.mode === 'table') {
+      out.push(`  ${C.bold}应用与数据一体化${C.reset}：${C.cyan}[u]仅清数据${C.reset}(保留本体，免卸载) · ${C.green}[x]卸载本体${C.reset} · space/u 切换 · 大写 U 全选久未使用的应用数据`);
       out.push(C.gray + '─'.repeat(Math.max(W - 2, 20)) + C.reset);
     }
 
@@ -990,9 +1156,13 @@ export class Tui {
       return;
     }
 
-    // 表格
+    // 表格表头（锁定固定显示）
+    out.push(this.renderHeader());
+    out.push(C.gray + ' ' + '┄'.repeat(Math.max(W - 4, 20)) + C.reset);
+
+    // 表格数据行
     const rows = this.buildRows();
-    const bodyH = H - 7;
+    const bodyH = Math.max(H - 9, 3);
     if (rows.length === 0) {
       out.push(C.gray + ' （无数据 — ' + (this.filter ? '无匹配项，esc 清除过滤' : '尚未扫描，按 r 开始') + '）' + C.reset);
     }
