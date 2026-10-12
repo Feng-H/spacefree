@@ -18,33 +18,69 @@ const C = {
   bgSel: '\x1b[48;5;236m', bgTab: '\x1b[48;5;240m',
 };
 
+// 零宽字符（变体选择符 VS16 / 零宽连接符 ZWJ）
+function isZeroW(cp: number): boolean {
+  return cp === 0xfe0f || cp === 0x200d || cp === 0x200b;
+}
+// Emoji_Presentation（终端实际渲染为 2 格）的精确区间，补齐 0x26xx 段易漏符号
+function isWideEmoji(cp: number): boolean {
+  return (cp >= 0x231a && cp <= 0x231b) || cp === 0x23f0 || cp === 0x23f3 ||
+    (cp >= 0x23e9 && cp <= 0x23ec) ||
+    (cp >= 0x25fd && cp <= 0x25fe) ||
+    (cp >= 0x2648 && cp <= 0x2653) || cp === 0x267f || cp === 0x2693 ||
+    cp === 0x26a1 || (cp >= 0x26aa && cp <= 0x26ab) ||
+    (cp >= 0x26bd && cp <= 0x26be) || (cp >= 0x26c4 && cp <= 0x26c5) ||
+    cp === 0x26ce || cp === 0x26d4 || cp === 0x26ea ||
+    (cp >= 0x26f2 && cp <= 0x26f3) || cp === 0x26f5 || cp === 0x26fa || cp === 0x26fd ||
+    cp === 0x2705 || (cp >= 0x270a && cp <= 0x270b) || cp === 0x2728 ||
+    cp === 0x274c || cp === 0x274e || (cp >= 0x2753 && cp <= 0x2755) || cp === 0x2757 ||
+    (cp >= 0x2795 && cp <= 0x2797) || cp === 0x27b0 || cp === 0x27bf ||
+    (cp >= 0x2b1b && cp <= 0x2b1c) || cp === 0x2b50 || cp === 0x2b55;
+}
 function charW(cp: number): number {
+  if (isZeroW(cp)) return 0;
   if (cp >= 0x1100 && (
     cp <= 0x115f || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
     (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f) ||
     (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
     (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd))) return 2;
+  if (isWideEmoji(cp)) return 2;
   return 1;
 }
+/** ANSI 感知显示宽度：跳过 \x1b[..m 颜色序列（不计宽） */
 function dwidth(s: string): number {
-  let w = 0;
-  for (const ch of s) w += charW(ch.codePointAt(0)!);
+  let w = 0, inEsc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    const cp = s.codePointAt(i)!;
+    if (cp === 0x1b) { inEsc = true; continue; }
+    if (inEsc) { if (c === 'm') inEsc = false; continue; }
+    w += charW(cp);
+    if (cp > 0xffff) i++; // 代理对跳过低位
+  }
   return w;
 }
 function pad(s: string, n: number): string {
   const d = n - dwidth(s);
   return s + (d > 0 ? ' '.repeat(d) : '');
 }
+/** ANSI 感知截断：保留颜色序列，截断处补 … 并复位颜色 */
 function trunc(s: string, n: number): string {
   if (n < 1) return '';
   if (dwidth(s) <= n) return s;
-  let w = 0, out = '';
-  for (const ch of s) {
-    const cw = charW(ch.codePointAt(0)!);
+  let w = 0, out = '', inEsc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    const cp = s.codePointAt(i)!;
+    if (cp === 0x1b) { inEsc = true; out += c; continue; }
+    if (inEsc) { out += c; if (c === 'm') inEsc = false; continue; }
+    const cw = charW(cp);
     if (w + cw > n - 1) break;
-    out += ch; w += cw;
+    out += String.fromCodePoint(cp);
+    w += cw;
+    if (cp > 0xffff) i++;
   }
-  return out + '…';
+  return out + '…' + '\x1b[0m';
 }
 function padTrunc(s: string, n: number): string { return pad(trunc(s, n), n); }
 
@@ -382,7 +418,7 @@ export class Tui {
       const bigDirs: { name: string; path: string; sizeK: number; note: string }[] = [
         ...(cache?.devCaches ?? []).filter((x) => !x.safe).map((x) => ({ name: x.name, path: x.path, sizeK: x.sizeK, note: x.note ?? '删除=移入废纸篓，可恢复' })),
       ];
-      if (cache && cache.libraryCachesK > 0) bigDirs.push({ name: '~/Library/Caches', path: cache.libraryCachesPath, sizeK: cache.libraryCachesK, note: '⚠️ 全部应用缓存，删后各应用首次启动变慢' });
+      if (cache && cache.libraryCachesK > 0) bigDirs.push({ name: '~/Library/Caches', path: cache.libraryCachesPath, sizeK: cache.libraryCachesK, note: '⚠ 全部应用缓存，删后各应用首次启动变慢' });
       if (cache && cache.derivedDataK > 0) bigDirs.push({ name: 'Xcode DerivedData', path: cache.derivedDataPath, sizeK: cache.derivedDataK, note: 'Xcode 构建产物，删后下次构建全量重编' });
       for (const d of bigDirs) {
         rows.push({
@@ -412,7 +448,7 @@ export class Tui {
           cells: [
             C.dim + ' ↳ ' + C.reset + ' ',
             padTrunc(time, 18),
-            (h.ok ? C.green : C.red) + (h.ok ? '✅ ' : '⚠️ ') + C.reset + padTrunc((h.actions ?? []).join('；') + (del ? C.reset + '' : ''), 70),
+            padTrunc((h.ok ? C.green + '✅ ' + C.reset : C.red + '⚠ ' + C.reset) + (h.actions ?? []).join('；'), 70),
             (h.deleted ?? []).length > 0 ? C.cyan + `[回车]重装: ${trunc(del, 24)}` + C.reset : '',
           ],
           plain: `${time} ${(h.actions ?? []).join(';')} ${del}`,
@@ -551,7 +587,7 @@ export class Tui {
         this.log('');
         this.log(`── 执行完成（${ok ? '全部成功' : '部分失败'}）· 已写入清理历史 ──`);
         if (skipped.length > 0) this.log(C.yellow + `跳过: ${skipped.join('、')}` + C.reset);
-        this.lastExecSummary = `${ok ? '✅' : '⚠️'} ${dry ? '预演' : '执行'}完成` + (skipped.length ? `，跳过 ${skipped.length} 项` : '');
+        this.lastExecSummary = `${ok ? '✅' : '⚠'} ${dry ? '预演' : '执行'}完成` + (skipped.length ? `，跳过 ${skipped.length} 项` : '');
         this.log(C.bold + '按 q/esc 返回列表 · 建议 r 重新扫描刷新数据' + C.reset);
         this.selF.clear(); this.selC.clear(); this.selA.clear(); this.selU.clear(); this.selD.clear(); this.selP.clear(); this.selX.clear();
         this.dryPreviewed = false;
@@ -943,7 +979,7 @@ export class Tui {
 
     if (this.tab === 'brew') {
       cells = [
-        '   ',
+        '    ',
         padH('名称 / Token', 24),
         padH('大小', 10),
         padH('安装时间', 9),
@@ -954,7 +990,7 @@ export class Tui {
       ];
     } else if (this.tab === 'apps') {
       cells = [
-        '   ',
+        '    ',
         padH('应用名称', 26),
         padH('本体大小', 10),
         padH('数据大小', 10),
@@ -964,7 +1000,7 @@ export class Tui {
       ];
     } else if (this.tab === 'downloads') {
       cells = [
-        '   ',
+        '    ',
         padH('文件名', 50),
         padH('大小', 10),
         padH('下载时间', 9),
@@ -972,7 +1008,7 @@ export class Tui {
       ];
     } else if (this.tab === 'projects') {
       cells = [
-        '   ',
+        '    ',
         padH('项目名称', 26),
         padH('依赖大小', 10),
         padH('依赖目录', 14),
@@ -983,21 +1019,21 @@ export class Tui {
       ];
     } else if (this.tab === 'cache') {
       cells = [
-        '   ',
+        '    ',
         padH('缓存项目 / 路径', 24),
         padH('大小', 10),
         padH('清理命令 / 风险提示', 58),
       ];
     } else if (this.tab === 'history') {
       cells = [
-        '   ',
+        '    ',
         padH('清理时间', 18),
         padH('清理动作与结果', 70),
         padH('快速重装', 24),
       ];
     } else if (this.tab === 'settings') {
       cells = [
-        '   ',
+        '    ',
         padH('配置项', 34),
         padH('当前值', 46),
         padH('操作提示', 20),
